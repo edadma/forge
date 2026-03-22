@@ -11,6 +11,8 @@
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
+    "@petradb/engine": "^1.5.1",
+    "@petradb/quarry": "^1.5.2",
     "asterui": "^0.12.90",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",

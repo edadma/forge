@@ -13,6 +13,14 @@ function createLspChannel(channel: string) {
 
 contextBridge.exposeInMainWorld('forge', {
   platform: process.platform,
+  // Database
+  dbInit: () => ipcRenderer.invoke('db-init'),
+  dbGetProjects: () => ipcRenderer.invoke('db-get-projects'),
+  dbAddProject: (name: string, path: string) => ipcRenderer.invoke('db-add-project', name, path),
+  dbRemoveProject: (path: string) => ipcRenderer.invoke('db-remove-project', path),
+  dbGetProjectState: (path: string) => ipcRenderer.invoke('db-get-project-state', path),
+  dbSaveProjectState: (state: any) => ipcRenderer.invoke('db-save-project-state', state),
+  // File operations
   onFolderOpened: (callback: (folderPath: string) => void) => {
     const listener = (_event: unknown, folderPath: string) => callback(folderPath)
     ipcRenderer.on('folder-opened', listener)
@@ -40,4 +48,8 @@ contextBridge.exposeInMainWorld('forge', {
     ipcRenderer.on('eslint-diagnostics', listener)
     return () => ipcRenderer.removeListener('eslint-diagnostics', listener)
   },
+  // Language server lifecycle
+  startLanguageServers: () => ipcRenderer.invoke('start-language-servers'),
+  // Open folder dialog (from launcher)
+  openFolderDialog: () => ipcRenderer.invoke('open-folder-dialog'),
 })

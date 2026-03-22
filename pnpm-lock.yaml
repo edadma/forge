@@ -13,6 +13,12 @@ importers:
       '@monaco-editor/react':
         specifier: ^4.7.0
         version: 4.7.0(monaco-editor@0.52.2)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      '@petradb/engine':
+        specifier: ^1.5.1
+        version: 1.5.1
+      '@petradb/quarry':
+        specifier: ^1.5.2
+        version: 1.5.2
       asterui:
         specifier: ^0.12.90
         version: 0.12.90(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -358,6 +364,12 @@ packages:
       monaco-editor: '>= 0.25.0 < 1'
       react: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
       react-dom: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
+
+  '@petradb/engine@1.5.1':
+    resolution: {integrity: sha512-RUjy/MGRD5n7HUIqiJXLyFi1da0ciA0AXIIKBe9hlUbKxboL3Ct+hQy5H/2DS1aVJr9BpZHOEri37zKkA09X6Q==}
+
+  '@petradb/quarry@1.5.2':
+    resolution: {integrity: sha512-C4aZ/YDgSE3I9WfuYtEdszPiJT0GsOEE09DXKX2203o3Knh+hWCI2cl15U5ZdN3OL1wYnr+uDwDm9JxxjOGKLw==}
 
   '@rolldown/pluginutils@1.0.0-beta.27':
     resolution: {integrity: sha512-+d0F4MKMCbeVUJwG96uQ4SgAznZNSq93I3V+9NHA4OpvqG8mRCpGdKmK8l/dl02h2CCDHwW2FqilnTyDcAnqjA==}
@@ -1703,6 +1715,12 @@ snapshots:
       monaco-editor: 0.52.2
       react: 19.2.4
       react-dom: 19.2.4(react@19.2.4)
+
+  '@petradb/engine@1.5.1': {}
+
+  '@petradb/quarry@1.5.2':
+    dependencies:
+      '@petradb/engine': 1.5.1
 
   '@rolldown/pluginutils@1.0.0-beta.27': {}
 

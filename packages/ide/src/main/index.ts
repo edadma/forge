@@ -7,6 +7,8 @@ import {
   StreamMessageWriter,
   type Message,
 } from 'vscode-jsonrpc/node'
+import { db, projects, projectState, initDb } from './db'
+import { eq } from '@petradb/quarry'
 
 let win: BrowserWindow | null = null
 const servers: { name: string; process: ChildProcess }[] = []
@@ -181,6 +183,71 @@ const template: Electron.MenuItemConstructorOptions[] = [
   },
 ]
 
+// IPC: open folder dialog (from launcher)
+ipcMain.handle('open-folder-dialog', async () => {
+  if (!win) return null
+  const result = await dialog.showOpenDialog(win, {
+    properties: ['openDirectory'],
+  })
+  if (!result.canceled && result.filePaths.length > 0) {
+    return result.filePaths[0]
+  }
+  return null
+})
+
+// IPC: start language servers (called when a project is opened)
+ipcMain.handle('start-language-servers', () => {
+  if (servers.length === 0) {
+    startLanguageServers()
+  }
+})
+
+// IPC: database operations
+ipcMain.handle('db-init', () => initDb())
+
+ipcMain.handle('db-get-projects', async () => {
+  return db.from(projects).execute()
+})
+
+ipcMain.handle('db-add-project', async (_event, name: string, projectPath: string) => {
+  const now = new Date().toISOString()
+  try {
+    await db.insert(projects).values({ name, path: projectPath, lastOpened: now }).execute()
+  } catch {
+    // Already exists — update lastOpened
+    await db.update(projects).set({ lastOpened: now }).where(eq(projects.path, projectPath)).execute()
+  }
+})
+
+ipcMain.handle('db-remove-project', async (_event, projectPath: string) => {
+  await db.delete(projects).where(eq(projects.path, projectPath)).execute()
+})
+
+ipcMain.handle('db-get-project-state', async (_event, projectPath: string) => {
+  const rows = await db.from(projectState).where(eq(projectState.projectPath, projectPath)).execute()
+  return rows.length > 0 ? rows[0] : null
+})
+
+ipcMain.handle('db-save-project-state', async (_event, state: {
+  projectPath: string
+  openFiles: string
+  activeFile: string | null
+  windowBounds: string | null
+  splitterPositions: string | null
+}) => {
+  const existing = await db.from(projectState).where(eq(projectState.projectPath, state.projectPath)).execute()
+  if (existing.length > 0) {
+    await db.update(projectState).set({
+      openFiles: state.openFiles,
+      activeFile: state.activeFile,
+      windowBounds: state.windowBounds,
+      splitterPositions: state.splitterPositions,
+    }).where(eq(projectState.projectPath, state.projectPath)).execute()
+  } else {
+    await db.insert(projectState).values(state).execute()
+  }
+})
+
 // IPC: file operations
 ipcMain.handle('write-file', async (_event, filePath: string, content: string) => {
   await fs.writeFile(filePath, content, 'utf-8')
@@ -190,10 +257,10 @@ ipcMain.handle('read-file', async (_event, filePath: string) => {
   return fs.readFile(filePath, 'utf-8')
 })
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  await initDb()
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
   createWindow()
-  startLanguageServers()
 })
 
 app.on('window-all-closed', () => {
