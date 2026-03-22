@@ -1,10 +1,13 @@
 @import "tailwindcss";
 @plugin "daisyui" {
-  themes: forge-dark, forge-light;
+  themes: forge-dark --default, forge-light;
 }
 @source "../../node_modules/asterui/dist";
 
-@theme forge-dark {
+@plugin "daisyui/theme" {
+  name: "forge-dark";
+  default: true;
+  prefersdark: true;
   color-scheme: dark;
   --color-base-100: #1e1e1e;
   --color-base-200: #252526;
@@ -28,7 +31,8 @@
   --color-error-content: #1e1e1e;
 }
 
-@theme forge-light {
+@plugin "daisyui/theme" {
+  name: "forge-light";
   color-scheme: light;
   --color-base-100: #ffffff;
   --color-base-200: #f3f3f3;
