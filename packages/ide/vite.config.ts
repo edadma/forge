@@ -19,6 +19,11 @@ export default defineConfig({
   ],
   root: 'src/renderer',
   base: './',
+  server: {
+    fs: {
+      strict: false,
+    },
+  },
   build: {
     outDir: '../../dist/renderer',
     emptyOutDir: true,
@@ -27,6 +32,9 @@ export default defineConfig({
     format: 'es',
   },
   optimizeDeps: {
+    include: [
+      'vscode/localExtensionHost',
+    ],
     exclude: [
       '@codingame/monaco-vscode-api',
       '@codingame/monaco-vscode-extensions-service-override',
@@ -36,9 +44,6 @@ export default defineConfig({
       '@codingame/monaco-vscode-theme-defaults-default-extension',
       '@codingame/monaco-vscode-typescript-basics-default-extension',
       '@codingame/monaco-vscode-typescript-language-features-default-extension',
-    ],
-    include: [
-      'vscode/localExtensionHost',
     ],
   },
 })

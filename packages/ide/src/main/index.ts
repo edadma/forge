@@ -1,10 +1,22 @@
-import { app, BrowserWindow, Menu, dialog, ipcMain } from 'electron'
+import { app, BrowserWindow, Menu, dialog, ipcMain, session } from 'electron'
 import path from 'path'
 import fs from 'fs/promises'
 
 let win: BrowserWindow | null = null
 
 function createWindow() {
+  // Set headers for SharedArrayBuffer support (needed by TS language features)
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Cross-Origin-Opener-Policy': ['same-origin'],
+        'Cross-Origin-Embedder-Policy': ['credentialless'],
+        'Cross-Origin-Resource-Policy': ['cross-origin'],
+      },
+    })
+  })
+
   win = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -23,6 +35,7 @@ function createWindow() {
     win.webContents.openDevTools()
   } else {
     win.loadFile(path.join(__dirname, '../renderer/index.html'))
+    win.webContents.openDevTools()
   }
 }
 
