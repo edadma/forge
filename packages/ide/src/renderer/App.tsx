@@ -1,37 +1,39 @@
-import { useEffect, useRef } from 'react'
-import * as monaco from 'monaco-editor'
+import Editor, { type OnMount } from '@monaco-editor/react'
 import { useTheme } from 'asterui'
-import './userWorker'
+
+const handleMount: OnMount = async (_editor, monaco) => {
+  const ts = monaco.languages.typescript.typescriptDefaults
+
+  try {
+    const res = await fetch('https://unpkg.com/@types/react@19.2.14/index.d.ts')
+    if (res.ok) {
+      const content = await res.text()
+      // Wrap in declare module so imports resolve
+      const wrapped = `declare module 'react' {\n${content}\n}`
+      ts.addExtraLib(wrapped, 'file:///node_modules/@types/react/index.d.ts')
+    }
+  } catch {
+    // Offline fallback — skip
+  }
+}
 
 export default function App() {
   const { theme } = useTheme()
-  const containerRef = useRef<HTMLDivElement>(null)
-  const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
+  const monacoTheme = theme === 'forge-dark' ? 'vs-dark' : 'vs'
 
-  useEffect(() => {
-    if (!containerRef.current || editorRef.current) return
-
-    const editor = monaco.editor.create(containerRef.current, {
-      value: '// Start typing...',
-      language: 'typescript',
-      theme: theme === 'forge-dark' ? 'vs-dark' : 'vs',
-      fontSize: 14,
-      minimap: { enabled: false },
-      automaticLayout: true,
-    })
-
-    editorRef.current = editor
-    return () => {
-      editor.dispose()
-      editorRef.current = null
-    }
-  }, [])
-
-  useEffect(() => {
-    if (editorRef.current) {
-      monaco.editor.setTheme(theme === 'forge-dark' ? 'vs-dark' : 'vs')
-    }
-  }, [theme])
-
-  return <div ref={containerRef} className="h-screen" />
+  return (
+    <div className="h-screen flex flex-col">
+      <Editor
+        defaultLanguage="typescript"
+        defaultValue="// Start typing..."
+        theme={monacoTheme}
+        onMount={handleMount}
+        options={{
+          fontSize: 14,
+          minimap: { enabled: false },
+          automaticLayout: true,
+        }}
+      />
+    </div>
+  )
 }
