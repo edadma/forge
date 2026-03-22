@@ -2,6 +2,11 @@ import { contextBridge, ipcRenderer } from 'electron'
 
 contextBridge.exposeInMainWorld('forge', {
   platform: process.platform,
+  onFolderOpened: (callback: (folderPath: string) => void) => {
+    const listener = (_event: unknown, folderPath: string) => callback(folderPath)
+    ipcRenderer.on('folder-opened', listener)
+    return () => ipcRenderer.removeListener('folder-opened', listener)
+  },
   onFileOpened: (callback: (file: { path: string; content: string }) => void) => {
     const listener = (_event: unknown, file: { path: string; content: string }) => callback(file)
     ipcRenderer.on('file-opened', listener)

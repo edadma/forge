@@ -8,6 +8,8 @@ import {
   didCloseDocument,
   onNotification,
   pathToUri,
+  requestCompletion,
+  requestHover,
 } from './lspClient'
 
 type MonacoInstance = Parameters<OnMount>[1]
@@ -21,13 +23,27 @@ interface OpenFile {
 
 const forge = (window as any).forge
 
-function getLanguageId(filePath: string): string {
+// Language ID for the LSP (needs exact tsx/jsx distinction)
+function getLspLanguageId(filePath: string): string {
   const ext = filePath.split('.').pop()
   switch (ext) {
     case 'ts': return 'typescript'
     case 'tsx': return 'typescriptreact'
     case 'js': return 'javascript'
     case 'jsx': return 'javascriptreact'
+    case 'json': return 'json'
+    case 'css': return 'css'
+    case 'html': return 'html'
+    default: return 'plaintext'
+  }
+}
+
+// Language ID for Monaco editor (tsx/jsx mapped to ts/js for proper highlighting)
+function getMonacoLanguageId(filePath: string): string {
+  const ext = filePath.split('.').pop()
+  switch (ext) {
+    case 'ts': case 'tsx': return 'typescript'
+    case 'js': case 'jsx': return 'javascript'
     case 'json': return 'json'
     case 'css': return 'css'
     case 'html': return 'html'
@@ -51,6 +67,7 @@ export default function App() {
   const monacoTheme = theme === 'forge-dark' ? 'vs-dark' : 'vs'
   const [files, setFiles] = useState<OpenFile[]>([])
   const [activeFile, setActiveFile] = useState<string | null>(null)
+  const [projectRoot, setProjectRoot] = useState<string | null>(null)
   const monacoRef = useRef<MonacoInstance | null>(null)
   const editorRef = useRef<EditorInstance | null>(null)
   const lspReady = useRef(false)
@@ -81,7 +98,7 @@ export default function App() {
       const uri = monacoRef.current.Uri.parse(pathToUri(file.path))
       const existing = monacoRef.current.editor.getModel(uri)
       if (!existing) {
-        monacoRef.current.editor.createModel(file.content, getLanguageId(file.path), uri)
+        monacoRef.current.editor.createModel(file.content, getMonacoLanguageId(file.path), uri)
       }
       switchToFile(file.path)
     }
@@ -89,9 +106,33 @@ export default function App() {
     // Notify language server
     if (lspReady.current) {
       fileVersions.current.set(file.path, 1)
-      didOpenDocument(pathToUri(file.path), getLanguageId(file.path), 1, file.content)
+      didOpenDocument(pathToUri(file.path), getLspLanguageId(file.path), 1, file.content)
     }
   }, [switchToFile])
+
+  // Listen for folder opened from native menu
+  useEffect(() => {
+    if (!forge?.onFolderOpened) return
+    return forge.onFolderOpened((folderPath: string) => {
+      setProjectRoot(folderPath)
+    })
+  }, [])
+
+  // Initialize LSP when project root is set
+  useEffect(() => {
+    if (projectRoot && !lspReady.current) {
+      initializeLsp(projectRoot).then(() => {
+        lspReady.current = true
+        // Open all currently loaded files with the LS
+        files.forEach((f) => {
+          fileVersions.current.set(f.path, f.version)
+          didOpenDocument(pathToUri(f.path), getLspLanguageId(f.path), f.version, f.content)
+        })
+      }).catch((err) => {
+        console.error('LSP init failed:', err)
+      })
+    }
+  }, [projectRoot, files])
 
   // Listen for files opened from native menu
   useEffect(() => {
@@ -112,6 +153,16 @@ export default function App() {
   const handleMount: OnMount = async (editor, monaco) => {
     monacoRef.current = monaco
     editorRef.current = editor
+
+    // Disable Monaco's built-in TS/JS diagnostics — LSP handles these
+    monaco.languages.typescript.typescriptDefaults.setDiagnosticsOptions({
+      noSemanticValidation: true,
+      noSyntaxValidation: true,
+    })
+    monaco.languages.typescript.javascriptDefaults.setDiagnosticsOptions({
+      noSemanticValidation: true,
+      noSyntaxValidation: true,
+    })
 
     // Listen for diagnostics from the language server
     onNotification('textDocument/publishDiagnostics', (params: any) => {
@@ -147,22 +198,13 @@ export default function App() {
     // (will be called once files are opened)
   }
 
-  // Initialize LSP when first file is opened
+  // Auto-init LSP from first file's directory if no folder was opened
   useEffect(() => {
-    if (files.length > 0 && !lspReady.current && monacoRef.current) {
+    if (files.length > 0 && !lspReady.current && !projectRoot) {
       const rootPath = files[0].path.substring(0, files[0].path.lastIndexOf('/'))
-      initializeLsp(rootPath).then(() => {
-        lspReady.current = true
-        // Open all currently loaded files with the LS
-        files.forEach((f) => {
-          fileVersions.current.set(f.path, f.version)
-          didOpenDocument(pathToUri(f.path), getLanguageId(f.path), f.version, f.content)
-        })
-      }).catch((err) => {
-        console.error('LSP init failed:', err)
-      })
+      setProjectRoot(rootPath)
     }
-  }, [files])
+  }, [files, projectRoot])
 
   const closeTab = (filePath: string) => {
     if (monacoRef.current) {
@@ -238,7 +280,7 @@ export default function App() {
 
       {files.length === 0 && (
         <div className="flex-1 flex items-center justify-center text-base-content/40">
-          <span>⌘O to open a file</span>
+          <span>⌘⇧O to open a folder, ⌘O to open a file</span>
         </div>
       )}
     </div>

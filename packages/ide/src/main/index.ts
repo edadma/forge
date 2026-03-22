@@ -76,6 +76,19 @@ const template: Electron.MenuItemConstructorOptions[] = [
     label: 'File',
     submenu: [
       {
+        label: 'Open Folder...',
+        accelerator: 'CmdOrCtrl+Shift+O',
+        click: async () => {
+          if (!win) return
+          const result = await dialog.showOpenDialog(win, {
+            properties: ['openDirectory'],
+          })
+          if (!result.canceled && result.filePaths.length > 0) {
+            win.webContents.send('folder-opened', result.filePaths[0])
+          }
+        },
+      },
+      {
         label: 'Open File...',
         accelerator: 'CmdOrCtrl+O',
         click: async () => {
