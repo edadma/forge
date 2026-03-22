@@ -168,6 +168,43 @@ export default function App() {
     monacoRef.current = monaco
     editorRef.current = editor
 
+    // Register editor opener to handle navigation to files (references, etc.)
+    const openerService = (editor as any)._codeEditorService
+    if (openerService?.openCodeEditor) {
+      const origOpen = openerService.openCodeEditor.bind(openerService)
+      openerService.openCodeEditor = async (input: any, source: any, sideBySide: any) => {
+        const uri = input?.resource
+        if (uri) {
+          const filePath = uri.path
+          let model = monaco.editor.getModel(uri)
+          if (!model) {
+            try {
+              const content = await forge.readFile(filePath)
+              model = monaco.editor.createModel(content, getMonacoLanguageId(filePath), uri)
+              openFile({ path: filePath, content })
+            } catch {
+              return origOpen(input, source, sideBySide)
+            }
+          }
+          if (model) {
+            editor.setModel(model)
+            setActiveFile(filePath)
+            if (input.options?.selection) {
+              const sel = input.options.selection
+              editor.setPosition({
+                lineNumber: sel.startLineNumber,
+                column: sel.startColumn,
+              })
+              editor.revealLineInCenter(sel.startLineNumber)
+            }
+            editor.focus()
+            return editor
+          }
+        }
+        return origOpen(input, source, sideBySide)
+      }
+    }
+
     // Disable Monaco's built-in TS/JS features that LSP replaces
     const disabledMode = {
       completionItems: true,  // keep — LSP adds on top
