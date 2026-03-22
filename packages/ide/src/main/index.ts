@@ -43,14 +43,6 @@ function startServer(name: string, binPath: string, args: string[], ipcChannel: 
 
   // Forward LS → renderer
   reader.listen((msg) => {
-    const m = msg as any
-    if (m.method && m.id) {
-      console.log(`${name} → renderer: REQUEST ${m.method} #${m.id}`)
-    } else if (m.method) {
-      console.log(`${name} → renderer: ${m.method}`)
-    } else {
-      console.log(`${name} → renderer: response #${m.id}`)
-    }
     if (win) {
       win.webContents.send(ipcChannel, msg)
     }
@@ -58,19 +50,12 @@ function startServer(name: string, binPath: string, args: string[], ipcChannel: 
 
   // Forward renderer → LS
   ipcMain.on(ipcChannel, (_event: any, msg: Message) => {
-    console.log(`${name} ← renderer:`, (msg as any).method || `response #${(msg as any).id}`)
     writer.write(msg)
   })
 
   serverProcess.on('exit', (code) => {
     console.log(`${name} exited with code ${code}`)
   })
-
-  serverProcess.on('error', (err) => {
-    console.error(`${name} spawn error:`, err)
-  })
-
-  console.log(`${name} started with PID ${serverProcess.pid}`)
 
   serverProcess.stderr?.on('data', (data) => {
     console.error(`${name} stderr: ${data}`)
