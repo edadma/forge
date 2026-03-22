@@ -113,6 +113,14 @@ export class LspClient {
     })
   }
 
+  async requestReferences(uri: string, line: number, character: number) {
+    return this.sendRequest('textDocument/references', {
+      textDocument: { uri },
+      position: { line, character },
+      context: { includeDeclaration: true },
+    })
+  }
+
   async requestDefinition(uri: string, line: number, character: number) {
     return this.sendRequest('textDocument/definition', {
       textDocument: { uri },

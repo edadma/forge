@@ -168,7 +168,24 @@ export default function App() {
     monacoRef.current = monaco
     editorRef.current = editor
 
-    // Disable Monaco's built-in TS/JS diagnostics — LSP handles these
+    // Disable Monaco's built-in TS/JS features that LSP replaces
+    const disabledMode = {
+      completionItems: true,  // keep — LSP adds on top
+      hovers: false,          // disable — LSP provides these
+      documentSymbols: true,  // keep
+      definitions: false,     // disable — LSP provides these
+      references: true,       // keep for now
+      documentHighlights: true,
+      rename: true,
+      diagnostics: false,     // disable — LSP provides these
+      documentRangeFormattingEdits: true,
+      signatureHelp: true,
+      onTypeFormattingEdits: true,
+      codeActions: true,
+      inlayHints: true,
+    }
+    monaco.languages.typescript.typescriptDefaults.setModeConfiguration(disabledMode)
+    monaco.languages.typescript.javascriptDefaults.setModeConfiguration(disabledMode)
     monaco.languages.typescript.typescriptDefaults.setDiagnosticsOptions({
       noSemanticValidation: true,
       noSyntaxValidation: true,
@@ -380,6 +397,48 @@ export default function App() {
             }
 
             return locations.map((loc: any) => ({
+              uri: monaco.Uri.parse(loc.uri),
+              range: {
+                startLineNumber: loc.range.start.line + 1,
+                startColumn: loc.range.start.character + 1,
+                endLineNumber: loc.range.end.line + 1,
+                endColumn: loc.range.end.character + 1,
+              },
+            }))
+          } catch {
+            return null
+          }
+        },
+      })
+    }
+
+    // Register LSP references provider for TS/JS
+    for (const lang of languages) {
+      monaco.languages.registerReferenceProvider(lang, {
+        provideReferences: async (model, position) => {
+          if (!tsClient.isInitialized) return null
+          try {
+            const result = await tsClient.requestReferences(
+              model.uri.toString(),
+              position.lineNumber - 1,
+              position.column - 1,
+            )
+            if (!result) return null
+
+            // Pre-load any files that aren't open yet
+            for (const loc of result) {
+              const targetUri = monaco.Uri.parse(loc.uri)
+              if (!monaco.editor.getModel(targetUri)) {
+                const filePath = targetUri.path
+                try {
+                  const content = await forge.readFile(filePath)
+                  monaco.editor.createModel(content, getMonacoLanguageId(filePath), targetUri)
+                  openFile({ path: filePath, content })
+                } catch {}
+              }
+            }
+
+            return result.map((loc: any) => ({
               uri: monaco.Uri.parse(loc.uri),
               range: {
                 startLineNumber: loc.range.start.line + 1,
