@@ -9,7 +9,7 @@ import {
 } from 'vscode-jsonrpc/node'
 
 let win: BrowserWindow | null = null
-let lsProcess: ChildProcess | null = null
+const servers: { name: string; process: ChildProcess }[] = []
 
 function createWindow() {
   win = new BrowserWindow({
@@ -33,36 +33,101 @@ function createWindow() {
   }
 }
 
-// Language Server
-function startLanguageServer() {
-  const lsPath = path.resolve(
-    __dirname,
-    '../../node_modules/.bin/typescript-language-server',
-  )
-  lsProcess = spawn(lsPath, ['--stdio'])
+// Generic language server launcher
+function startServer(name: string, binPath: string, args: string[], ipcChannel: string) {
+  const serverProcess = spawn(binPath, args)
+  servers.push({ name, process: serverProcess })
 
-  const reader = new StreamMessageReader(lsProcess.stdout!)
-  const writer = new StreamMessageWriter(lsProcess.stdin!)
+  const reader = new StreamMessageReader(serverProcess.stdout!)
+  const writer = new StreamMessageWriter(serverProcess.stdin!)
 
   // Forward LS → renderer
   reader.listen((msg) => {
+    const m = msg as any
+    if (m.method && m.id) {
+      console.log(`${name} → renderer: REQUEST ${m.method} #${m.id}`)
+    } else if (m.method) {
+      console.log(`${name} → renderer: ${m.method}`)
+    } else {
+      console.log(`${name} → renderer: response #${m.id}`)
+    }
     if (win) {
-      win.webContents.send('lsp-message', msg)
+      win.webContents.send(ipcChannel, msg)
     }
   })
 
   // Forward renderer → LS
-  ipcMain.on('lsp-message', (_event: any, msg: Message) => {
+  ipcMain.on(ipcChannel, (_event: any, msg: Message) => {
+    console.log(`${name} ← renderer:`, (msg as any).method || `response #${(msg as any).id}`)
     writer.write(msg)
   })
 
-  lsProcess.on('exit', (code) => {
-    console.log(`Language server exited with code ${code}`)
-    lsProcess = null
+  serverProcess.on('exit', (code) => {
+    console.log(`${name} exited with code ${code}`)
   })
 
-  lsProcess.stderr?.on('data', (data) => {
-    console.error(`LS stderr: ${data}`)
+  serverProcess.on('error', (err) => {
+    console.error(`${name} spawn error:`, err)
+  })
+
+  console.log(`${name} started with PID ${serverProcess.pid}`)
+
+  serverProcess.stderr?.on('data', (data) => {
+    console.error(`${name} stderr: ${data}`)
+  })
+}
+
+function startLanguageServers() {
+  // TypeScript language server
+  startServer(
+    'typescript-language-server',
+    path.resolve(__dirname, '../../node_modules/.bin/typescript-language-server'),
+    ['--stdio'],
+    'lsp-ts',
+  )
+
+  // ESLint — run directly via project's eslint
+  startEslintRunner()
+}
+
+// ESLint runner — executes project's eslint on files and sends diagnostics
+function startEslintRunner() {
+  // Listen for lint requests from renderer
+  ipcMain.on('eslint-lint', async (_event, data: { uri: string; filePath: string; rootPath: string }) => {
+    if (!win) return
+    try {
+      const { execFile } = await import('child_process')
+      const eslintBin = path.join(data.rootPath, 'node_modules/.bin/eslint')
+
+      execFile(eslintBin, [data.filePath, '--format', 'json'], {
+        cwd: data.rootPath,
+      }, (error, stdout) => {
+        try {
+          // eslint exits with code 1 when there are lint errors, which is normal
+          const results = JSON.parse(stdout)
+          if (results.length > 0) {
+            const diagnostics = results[0].messages.map((msg: any) => ({
+              range: {
+                start: { line: (msg.line || 1) - 1, character: (msg.column || 1) - 1 },
+                end: { line: (msg.endLine || msg.line || 1) - 1, character: (msg.endColumn || msg.column || 1) - 1 },
+              },
+              severity: msg.severity === 2 ? 1 : 2, // 2=error→1, 1=warning→2
+              message: msg.message,
+              source: 'eslint',
+              code: msg.ruleId,
+            }))
+            win!.webContents.send('eslint-diagnostics', { uri: data.uri, diagnostics })
+          } else {
+            win!.webContents.send('eslint-diagnostics', { uri: data.uri, diagnostics: [] })
+          }
+        } catch {
+          // JSON parse failed or no results
+          win!.webContents.send('eslint-diagnostics', { uri: data.uri, diagnostics: [] })
+        }
+      })
+    } catch (err) {
+      console.error('ESLint runner error:', err)
+    }
   })
 }
 
@@ -139,11 +204,11 @@ ipcMain.handle('write-file', async (_event, filePath: string, content: string) =
 app.whenReady().then(() => {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
   createWindow()
-  startLanguageServer()
+  startLanguageServers()
 })
 
 app.on('window-all-closed', () => {
-  lsProcess?.kill()
+  servers.forEach((s) => s.process.kill())
   if (process.platform !== 'darwin') app.quit()
 })
 

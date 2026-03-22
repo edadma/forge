@@ -1,16 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import Editor, { type OnMount } from '@monaco-editor/react'
 import { useTheme, Tabs } from 'asterui'
-import {
-  initializeLsp,
-  didOpenDocument,
-  didChangeDocument,
-  didCloseDocument,
-  onNotification,
-  pathToUri,
-  requestCompletion,
-  requestHover,
-} from './lspClient'
+import { tsClient, pathToUri } from './lspClient'
 
 type MonacoInstance = Parameters<OnMount>[1]
 type EditorInstance = Parameters<OnMount>[0]
@@ -70,7 +61,6 @@ export default function App() {
   const [projectRoot, setProjectRoot] = useState<string | null>(null)
   const monacoRef = useRef<MonacoInstance | null>(null)
   const editorRef = useRef<EditorInstance | null>(null)
-  const lspReady = useRef(false)
   const fileVersions = useRef<Map<string, number>>(new Map())
 
   const switchToFile = useCallback((filePath: string) => {
@@ -93,7 +83,6 @@ export default function App() {
     })
     setActiveFile(file.path)
 
-    // Create Monaco model if needed
     if (monacoRef.current) {
       const uri = monacoRef.current.Uri.parse(pathToUri(file.path))
       const existing = monacoRef.current.editor.getModel(uri)
@@ -103,14 +92,20 @@ export default function App() {
       switchToFile(file.path)
     }
 
-    // Notify language server
-    if (lspReady.current) {
-      fileVersions.current.set(file.path, 1)
-      didOpenDocument(pathToUri(file.path), getLspLanguageId(file.path), 1, file.content)
+    // Notify both language servers
+    const uri = pathToUri(file.path)
+    const langId = getLspLanguageId(file.path)
+    fileVersions.current.set(file.path, 1)
+    if (tsClient.isInitialized) {
+      tsClient.didOpenDocument(uri, langId, 1, file.content)
+    }
+    // Trigger ESLint
+    if (projectRoot) {
+      forge.lintFile(uri, file.path, projectRoot)
     }
   }, [switchToFile])
 
-  // Listen for folder opened from native menu
+  // Listen for folder opened
   useEffect(() => {
     if (!forge?.onFolderOpened) return
     return forge.onFolderOpened((folderPath: string) => {
@@ -118,23 +113,42 @@ export default function App() {
     })
   }, [])
 
-  // Initialize LSP when project root is set
+  // Initialize language servers when project root is set
   useEffect(() => {
-    if (projectRoot && !lspReady.current) {
-      initializeLsp(projectRoot).then(() => {
-        lspReady.current = true
-        // Open all currently loaded files with the LS
+    if (!projectRoot) return
+
+    const rootUri = pathToUri(projectRoot)
+
+    // Initialize TS server
+    if (!tsClient.isInitialized) {
+      tsClient.initialize(rootUri, {
+        textDocument: {
+          synchronization: { didSave: true },
+          completion: { completionItem: { snippetSupport: false } },
+          hover: {},
+          publishDiagnostics: { relatedInformation: true },
+        },
+      }).then(() => {
         files.forEach((f) => {
-          fileVersions.current.set(f.path, f.version)
-          didOpenDocument(pathToUri(f.path), getLspLanguageId(f.path), f.version, f.content)
+          tsClient.didOpenDocument(pathToUri(f.path), getLspLanguageId(f.path), f.version, f.content)
         })
-      }).catch((err) => {
-        console.error('LSP init failed:', err)
-      })
+      }).catch((err) => console.error('TS LSP init failed:', err))
     }
+
+    // Lint all open files with ESLint
+    files.forEach((f) => {
+      forge.lintFile(pathToUri(f.path), f.path, projectRoot)
+    })
   }, [projectRoot, files])
 
-  // Listen for files opened from native menu
+  // Auto-init from first file's directory if no folder opened
+  useEffect(() => {
+    if (files.length > 0 && !projectRoot) {
+      setProjectRoot(files[0].path.substring(0, files[0].path.lastIndexOf('/')))
+    }
+  }, [files, projectRoot])
+
+  // Listen for files opened
   useEffect(() => {
     if (!forge?.onFileOpened) return
     return forge.onFileOpened((file: { path: string; content: string }) => openFile(file))
@@ -164,8 +178,8 @@ export default function App() {
       noSyntaxValidation: true,
     })
 
-    // Listen for diagnostics from the language server
-    onNotification('textDocument/publishDiagnostics', (params: any) => {
+    // Listen for diagnostics from TS server
+    tsClient.onNotification('textDocument/publishDiagnostics', (params: any) => {
       const uri = monaco.Uri.parse(params.uri)
       const model = monaco.editor.getModel(uri)
       if (!model) return
@@ -180,8 +194,26 @@ export default function App() {
         source: d.source || 'ts',
         code: d.code?.toString(),
       }))
+      monaco.editor.setModelMarkers(model, 'ts', markers)
+    })
 
-      monaco.editor.setModelMarkers(model, 'lsp', markers)
+    // Listen for ESLint diagnostics (from direct runner)
+    forge.onEslintDiagnostics((data: { uri: string; diagnostics: any[] }) => {
+      const uri = monaco.Uri.parse(data.uri)
+      const model = monaco.editor.getModel(uri)
+      if (!model) return
+
+      const markers = data.diagnostics.map((d: any) => ({
+        severity: lspSeverityToMonaco(d.severity, monaco),
+        startLineNumber: d.range.start.line + 1,
+        startColumn: d.range.start.character + 1,
+        endLineNumber: d.range.end.line + 1,
+        endColumn: d.range.end.character + 1,
+        message: d.message,
+        source: 'eslint',
+        code: d.code?.toString(),
+      }))
+      monaco.editor.setModelMarkers(model, 'eslint', markers)
     })
 
     // Register LSP completion provider for TS/JS
@@ -190,9 +222,9 @@ export default function App() {
       monaco.languages.registerCompletionItemProvider(lang, {
         triggerCharacters: ['.', '"', "'", '/', '<'],
         provideCompletionItems: async (model, position) => {
-          if (!lspReady.current) return { suggestions: [] }
+          if (!tsClient.isInitialized) return { suggestions: [] }
           try {
-            const result = await requestCompletion(
+            const result = await tsClient.requestCompletion(
               model.uri.toString(),
               position.lineNumber - 1,
               position.column - 1,
@@ -225,27 +257,24 @@ export default function App() {
       })
     }
 
-    // Track content changes and notify LSP
+    // Track content changes and notify both LSPs
     editor.onDidChangeModelContent(() => {
       const model = editor.getModel()
-      if (!model || !lspReady.current) return
+      if (!model) return
       const filePath = model.uri.path
       const version = (fileVersions.current.get(filePath) || 1) + 1
       fileVersions.current.set(filePath, version)
-      didChangeDocument(model.uri.toString(), version, model.getValue())
+      const uri = model.uri.toString()
+      if (tsClient.isInitialized) {
+        tsClient.didChangeDocument(uri, version, model.getValue())
+      }
+      // Re-lint with ESLint (debounced by saving to disk first would be better,
+      // but for now lint on every change)
+      if (projectRoot) {
+        forge.lintFile(uri, filePath, projectRoot)
+      }
     })
-
-    // Initialize LSP with the first opened file's directory as root
-    // (will be called once files are opened)
   }
-
-  // Auto-init LSP from first file's directory if no folder was opened
-  useEffect(() => {
-    if (files.length > 0 && !lspReady.current && !projectRoot) {
-      const rootPath = files[0].path.substring(0, files[0].path.lastIndexOf('/'))
-      setProjectRoot(rootPath)
-    }
-  }, [files, projectRoot])
 
   const closeTab = (filePath: string) => {
     if (monacoRef.current) {
@@ -254,9 +283,8 @@ export default function App() {
       if (model) model.dispose()
     }
 
-    if (lspReady.current) {
-      didCloseDocument(pathToUri(filePath))
-    }
+    const docUri = pathToUri(filePath)
+    if (tsClient.isInitialized) tsClient.didCloseDocument(docUri)
 
     const remaining = files.filter((f) => f.path !== filePath)
     setFiles(remaining)
@@ -271,7 +299,6 @@ export default function App() {
 
   return (
     <div className="h-screen flex flex-col bg-base-100">
-      {/* Tab bar */}
       {files.length > 0 && (
         <div className="shrink-0">
           <Tabs
@@ -304,7 +331,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Editor */}
       <div className="flex-1" style={{ display: files.length > 0 ? 'block' : 'none' }}>
         <Editor
           theme={monacoTheme}

@@ -1,52 +1,130 @@
-// LSP Client — bridges between Monaco editor and typescript-language-server via IPC
+// LSP Client — bridges between Monaco editor and language servers via IPC
 
 const forge = (window as any).forge
 
 type LspCallback = (msg: any) => void
 
-let requestId = 0
-const pendingRequests = new Map<number, { resolve: (value: any) => void; reject: (err: any) => void }>()
-const notificationHandlers = new Map<string, LspCallback[]>()
+interface LspChannel {
+  send: (msg: any) => void
+  onMessage: (callback: (msg: any) => void) => () => void
+}
 
-// Listen for messages from the language server
-forge.onLspMessage((msg: any) => {
-  if ('id' in msg && !('method' in msg)) {
-    // Response to a request
-    const pending = pendingRequests.get(msg.id)
-    if (pending) {
-      pendingRequests.delete(msg.id)
-      if ('error' in msg) {
-        pending.reject(msg.error)
-      } else {
-        pending.resolve(msg.result)
+export class LspClient {
+  private requestId = 0
+  private pendingRequests = new Map<number, { resolve: (value: any) => void; reject: (err: any) => void }>()
+  private notificationHandlers = new Map<string, LspCallback[]>()
+  private requestHandlers = new Map<string, (params: any) => any>()
+  private initialized = false
+
+  constructor(private name: string, private channel: LspChannel) {
+    channel.onMessage((msg: any) => {
+      if ('id' in msg && !('method' in msg)) {
+        // Response to our request
+        const pending = this.pendingRequests.get(msg.id)
+        if (pending) {
+          this.pendingRequests.delete(msg.id)
+          if ('error' in msg) {
+            pending.reject(msg.error)
+          } else {
+            pending.resolve(msg.result)
+          }
+        }
+      } else if ('id' in msg && 'method' in msg) {
+        // Request FROM the server (e.g., workspace/configuration)
+        const handler = this.requestHandlers.get(msg.method)
+        if (handler) {
+          const result = handler(msg.params)
+          channel.send({ jsonrpc: '2.0', id: msg.id, result })
+        } else {
+          console.warn(`${this.name}: unhandled server request: ${msg.method}`)
+          channel.send({ jsonrpc: '2.0', id: msg.id, result: null })
+        }
+      } else if ('method' in msg) {
+        // Notification from server
+        const handlers = this.notificationHandlers.get(msg.method)
+        if (handlers) {
+          handlers.forEach((h) => h(msg.params))
+        }
       }
-    }
-  } else if ('method' in msg) {
-    // Notification or request from server
-    const handlers = notificationHandlers.get(msg.method)
-    if (handlers) {
-      handlers.forEach((h) => h(msg.params))
-    }
+    })
   }
-})
 
-export function sendRequest(method: string, params: any): Promise<any> {
-  const id = ++requestId
-  return new Promise((resolve, reject) => {
-    pendingRequests.set(id, { resolve, reject })
-    forge.sendLspMessage({ jsonrpc: '2.0', id, method, params })
-  })
-}
-
-export function sendNotification(method: string, params: any) {
-  forge.sendLspMessage({ jsonrpc: '2.0', method, params })
-}
-
-export function onNotification(method: string, callback: LspCallback) {
-  if (!notificationHandlers.has(method)) {
-    notificationHandlers.set(method, [])
+  onRequest(method: string, handler: (params: any) => any) {
+    this.requestHandlers.set(method, handler)
   }
-  notificationHandlers.get(method)!.push(callback)
+
+  sendRequest(method: string, params: any): Promise<any> {
+    const id = ++this.requestId
+    return new Promise((resolve, reject) => {
+      this.pendingRequests.set(id, { resolve, reject })
+      this.channel.send({ jsonrpc: '2.0', id, method, params })
+    })
+  }
+
+  sendNotification(method: string, params: any) {
+    this.channel.send({ jsonrpc: '2.0', method, params })
+  }
+
+  onNotification(method: string, callback: LspCallback) {
+    if (!this.notificationHandlers.has(method)) {
+      this.notificationHandlers.set(method, [])
+    }
+    this.notificationHandlers.get(method)!.push(callback)
+  }
+
+  get isInitialized() {
+    return this.initialized
+  }
+
+  async initialize(rootUri: string, capabilities: any = {}) {
+    const result = await this.sendRequest('initialize', {
+      processId: null,
+      rootUri,
+      capabilities,
+    })
+    this.sendNotification('initialized', {})
+    this.initialized = true
+    return result
+  }
+
+  didOpenDocument(uri: string, languageId: string, version: number, text: string) {
+    this.sendNotification('textDocument/didOpen', {
+      textDocument: { uri, languageId, version, text },
+    })
+  }
+
+  didChangeDocument(uri: string, version: number, text: string) {
+    this.sendNotification('textDocument/didChange', {
+      textDocument: { uri, version },
+      contentChanges: [{ text }],
+    })
+  }
+
+  didCloseDocument(uri: string) {
+    this.sendNotification('textDocument/didClose', {
+      textDocument: { uri },
+    })
+  }
+
+  async requestCompletion(uri: string, line: number, character: number) {
+    return this.sendRequest('textDocument/completion', {
+      textDocument: { uri },
+      position: { line, character },
+    })
+  }
+
+  async requestHover(uri: string, line: number, character: number) {
+    return this.sendRequest('textDocument/hover', {
+      textDocument: { uri },
+      position: { line, character },
+    })
+  }
+
+  async requestDiagnostics(uri: string) {
+    return this.sendRequest('textDocument/diagnostic', {
+      textDocument: { uri },
+    })
+  }
 }
 
 // Helper to convert file path to URI
@@ -54,66 +132,5 @@ export function pathToUri(filePath: string): string {
   return `file://${filePath}`
 }
 
-// Initialize the language server
-export async function initializeLsp(rootPath: string) {
-  const result = await sendRequest('initialize', {
-    processId: null,
-    rootUri: pathToUri(rootPath),
-    capabilities: {
-      textDocument: {
-        synchronization: {
-          didSave: true,
-          dynamicRegistration: false,
-        },
-        completion: {
-          completionItem: {
-            snippetSupport: false,
-          },
-        },
-        hover: {},
-        publishDiagnostics: {
-          relatedInformation: true,
-        },
-      },
-    },
-  })
-
-  sendNotification('initialized', {})
-  return result
-}
-
-// Document lifecycle
-export function didOpenDocument(uri: string, languageId: string, version: number, text: string) {
-  sendNotification('textDocument/didOpen', {
-    textDocument: { uri, languageId, version, text },
-  })
-}
-
-export function didChangeDocument(uri: string, version: number, text: string) {
-  sendNotification('textDocument/didChange', {
-    textDocument: { uri, version },
-    contentChanges: [{ text }],
-  })
-}
-
-export function didCloseDocument(uri: string) {
-  sendNotification('textDocument/didClose', {
-    textDocument: { uri },
-  })
-}
-
-// Request completions
-export async function requestCompletion(uri: string, line: number, character: number) {
-  return sendRequest('textDocument/completion', {
-    textDocument: { uri },
-    position: { line, character },
-  })
-}
-
-// Request hover
-export async function requestHover(uri: string, line: number, character: number) {
-  return sendRequest('textDocument/hover', {
-    textDocument: { uri },
-    position: { line, character },
-  })
-}
+// Create TS language server client
+export const tsClient = new LspClient('ts', forge.lspTs)
