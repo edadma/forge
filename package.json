@@ -1,0 +1,12 @@
+{
+  "name": "forge",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --filter @forge/ide dev",
+    "dev:electron": "pnpm --filter @forge/ide dev:electron",
+    "site": "pnpm --filter @forge/site dev"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["electron", "esbuild"]
+  }
+}

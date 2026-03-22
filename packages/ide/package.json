@@ -1,0 +1,32 @@
+{
+  "name": "@forge/ide",
+  "version": "0.0.1",
+  "private": true,
+  "main": "dist/main/index.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build && tsc -p tsconfig.main.json",
+    "electron": "npm run build && electron .",
+    "dev:electron": "tsc -p tsconfig.main.json && concurrently \"vite\" \"wait-on http://localhost:5173 && NODE_ENV=development electron .\""
+  },
+  "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
+    "asterui": "^0.12.90",
+    "monaco-editor": "^0.52.2",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.2.1",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^4.7.0",
+    "concurrently": "^9.2.1",
+    "daisyui": "^5.5.19",
+    "electron": "^41.0.3",
+    "tailwindcss": "^4.2.1",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.1",
+    "wait-on": "^9.0.4"
+  }
+}
