@@ -184,6 +184,47 @@ export default function App() {
       monaco.editor.setModelMarkers(model, 'lsp', markers)
     })
 
+    // Register LSP completion provider for TS/JS
+    const languages = ['typescript', 'javascript']
+    for (const lang of languages) {
+      monaco.languages.registerCompletionItemProvider(lang, {
+        triggerCharacters: ['.', '"', "'", '/', '<'],
+        provideCompletionItems: async (model, position) => {
+          if (!lspReady.current) return { suggestions: [] }
+          try {
+            const result = await requestCompletion(
+              model.uri.toString(),
+              position.lineNumber - 1,
+              position.column - 1,
+            )
+            if (!result) return { suggestions: [] }
+            const items = Array.isArray(result) ? result : result.items || []
+            return {
+              suggestions: items.map((item: any) => ({
+                label: item.label,
+                kind: item.kind ?? monaco.languages.CompletionItemKind.Text,
+                insertText: item.insertText || item.label,
+                detail: item.detail,
+                documentation: item.documentation,
+                sortText: item.sortText,
+                filterText: item.filterText,
+                range: {
+                  startLineNumber: position.lineNumber,
+                  startColumn: position.column - (item.textEdit?.range
+                    ? position.column - 1 - item.textEdit.range.start.character
+                    : 0),
+                  endLineNumber: position.lineNumber,
+                  endColumn: position.column,
+                },
+              })),
+            }
+          } catch {
+            return { suggestions: [] }
+          }
+        },
+      })
+    }
+
     // Track content changes and notify LSP
     editor.onDidChangeModelContent(() => {
       const model = editor.getModel()
