@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import Editor, { type OnMount } from '@monaco-editor/react'
-import { useTheme } from 'asterui'
+import { useTheme, Tabs } from 'asterui'
 
 type MonacoInstance = Parameters<OnMount>[1]
 type EditorInstance = Parameters<OnMount>[0]
@@ -124,30 +124,34 @@ export default function App() {
     <div className="h-screen flex flex-col bg-base-100">
       {/* Tab bar */}
       {files.length > 0 && (
-        <div className="flex bg-base-200 overflow-x-auto shrink-0">
-          {files.map((f) => (
-            <div
-              key={f.path}
-              className={`flex items-center gap-1 px-3 py-1.5 text-sm cursor-pointer border-r border-base-300 ${
-                f.path === activeFile ? 'bg-base-100 text-base-content' : 'text-base-content/60 hover:bg-base-300'
-              }`}
-              onClick={() => {
-                setActiveFile(f.path)
-                switchToFile(f.path)
-              }}
-            >
-              <span>{fileName(f.path)}</span>
-              <button
-                className="ml-1 opacity-50 hover:opacity-100"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  closeTab(f.path)
-                }}
-              >
-                ×
-              </button>
-            </div>
-          ))}
+        <div className="shrink-0">
+          <Tabs
+            items={files.map((f) => ({
+              key: f.path,
+              label: (
+                <span className="flex items-center gap-1">
+                  {fileName(f.path)}
+                  <span
+                    className="opacity-50 hover:opacity-100 cursor-pointer"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      closeTab(f.path)
+                    }}
+                  >
+                    ×
+                  </span>
+                </span>
+              ),
+              children: null,
+            }))}
+            activeKey={activeFile || undefined}
+            onChange={(key) => {
+              setActiveFile(key)
+              switchToFile(key)
+            }}
+            variant="border"
+            size="sm"
+          />
         </div>
       )}
 
