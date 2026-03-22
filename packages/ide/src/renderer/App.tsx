@@ -573,7 +573,7 @@ export default function App() {
           defaultValue=""
           options={{
             fontSize: 14,
-            minimap: { enabled: false },
+            minimap: { enabled: true },
             automaticLayout: true,
           }}
         />
