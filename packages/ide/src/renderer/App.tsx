@@ -1,180 +1,126 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
-import Editor, { type OnMount } from '@monaco-editor/react'
-import { useTheme, Tabs } from 'asterui'
+import { useEffect, useRef } from 'react'
+import { LogLevel } from '@codingame/monaco-vscode-api'
+import {
+  InMemoryFileSystemProvider,
+  registerFileSystemOverlay,
+  type IFileWriteOptions,
+} from '@codingame/monaco-vscode-files-service-override'
+import '@codingame/monaco-vscode-javascript-default-extension'
+import getKeybindingsServiceOverride from '@codingame/monaco-vscode-keybindings-service-override'
+import '@codingame/monaco-vscode-typescript-basics-default-extension'
+import '@codingame/monaco-vscode-theme-defaults-default-extension'
+import '@codingame/monaco-vscode-typescript-language-features-default-extension'
+import { EditorApp, type EditorAppConfig } from 'monaco-languageclient/editorApp'
+import {
+  MonacoVscodeApiWrapper,
+  type MonacoVscodeApiConfig,
+} from 'monaco-languageclient/vscodeApiWrapper'
+import { configureDefaultWorkerFactory } from 'monaco-languageclient/workerFactory'
+import getExtensionServiceOverride from '@codingame/monaco-vscode-extensions-service-override'
+import * as vscode from 'vscode'
 
-type MonacoInstance = Parameters<OnMount>[1]
-type EditorInstance = Parameters<OnMount>[0]
+const sampleCode = `const takesString = (x: string) => {};
 
-interface OpenFile {
-  path: string
-  content: string
-}
-
-const forge = (window as any).forge
-
-function getLanguage(filePath: string): string {
-  const ext = filePath.split('.').pop()
-  switch (ext) {
-    case 'ts': return 'typescript'
-    case 'tsx': return 'typescriptreact'
-    case 'js': return 'javascript'
-    case 'jsx': return 'javascriptreact'
-    case 'json': return 'json'
-    case 'css': return 'css'
-    case 'html': return 'html'
-    default: return 'plaintext'
-  }
-}
+// you should see an error marker in the next line
+takesString(0);
+`
 
 export default function App() {
-  const { theme } = useTheme()
-  const monacoTheme = theme === 'forge-dark' ? 'vs-dark' : 'vs'
-  const [files, setFiles] = useState<OpenFile[]>([])
-  const [activeFile, setActiveFile] = useState<string | null>(null)
-  const monacoRef = useRef<MonacoInstance | null>(null)
-  const editorRef = useRef<EditorInstance | null>(null)
-  const mountedRef = useRef(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const initRef = useRef(false)
 
-  const switchToFile = useCallback((filePath: string) => {
-    if (!monacoRef.current || !editorRef.current) return
-    const uri = monacoRef.current.Uri.parse(`file://${filePath}`)
-    const model = monacoRef.current.editor.getModel(uri)
-    if (model) {
-      editorRef.current.setModel(model)
-    }
+  useEffect(() => {
+    if (initRef.current || !containerRef.current) return
+    initRef.current = true
+    startEditor(containerRef.current)
   }, [])
 
-  const openFile = useCallback((file: OpenFile) => {
-    setFiles((prev) => {
-      if (prev.some((f) => f.path === file.path)) {
-        // Already open, just switch to it
-        setActiveFile(file.path)
-        switchToFile(file.path)
-        return prev
-      }
-      return [...prev, file]
-    })
-    setActiveFile(file.path)
+  return <div ref={containerRef} style={{ height: '100vh' }} />
+}
 
-    // Create Monaco model if needed
-    if (monacoRef.current) {
-      const uri = monacoRef.current.Uri.parse(`file://${file.path}`)
-      const existing = monacoRef.current.editor.getModel(uri)
-      if (!existing) {
-        monacoRef.current.editor.createModel(file.content, getLanguage(file.path), uri)
-      }
-      switchToFile(file.path)
-    }
-  }, [switchToFile])
-
-  // Listen for files opened from native menu
-  useEffect(() => {
-    if (!forge?.onFileOpened) return
-    return forge.onFileOpened((file: OpenFile) => openFile(file))
-  }, [openFile])
-
-  // Listen for save
-  useEffect(() => {
-    if (!forge?.onSaveFile) return
-    return forge.onSaveFile(() => {
-      if (activeFile && editorRef.current && forge.writeFile) {
-        forge.writeFile(activeFile, editorRef.current.getValue())
-      }
-    })
-  }, [activeFile])
-
-  const handleMount: OnMount = async (editor, monaco) => {
-    monacoRef.current = monaco
-    editorRef.current = editor
-    mountedRef.current = true
-
-    // Load React types
-    try {
-      const res = await fetch('https://unpkg.com/@types/react@19.2.14/index.d.ts')
-      if (res.ok) {
-        const content = await res.text()
-        const wrapped = `declare module 'react' {\n${content}\n}`
-        monaco.languages.typescript.typescriptDefaults.addExtraLib(
-          wrapped,
-          'file:///node_modules/@types/react/index.d.ts',
-        )
-      }
-    } catch {}
+async function startEditor(htmlContainer: HTMLElement) {
+  // Set up in-memory file system
+  const textEncoder = new TextEncoder()
+  const options: IFileWriteOptions = {
+    atomic: false,
+    unlock: false,
+    create: true,
+    overwrite: true,
   }
+  const workspaceUri = vscode.Uri.file('/workspace')
+  const workspaceFileUri = vscode.Uri.file('/workspace.code-workspace')
+  const codeUri = vscode.Uri.file('/workspace/hello.ts')
 
-  const closeTab = (filePath: string) => {
-    if (monacoRef.current) {
-      const uri = monacoRef.current.Uri.parse(`file://${filePath}`)
-      const model = monacoRef.current.editor.getModel(uri)
-      if (model) model.dispose()
-    }
-
-    const remaining = files.filter((f) => f.path !== filePath)
-    setFiles(remaining)
-    if (activeFile === filePath) {
-      const next = remaining.length > 0 ? remaining[remaining.length - 1].path : null
-      setActiveFile(next)
-      if (next) switchToFile(next)
-    }
-  }
-
-  const fileName = (p: string) => p.split('/').pop() || p
-
-  return (
-    <div className="h-screen flex flex-col bg-base-100">
-      {/* Tab bar */}
-      {files.length > 0 && (
-        <div className="shrink-0">
-          <Tabs
-            items={files.map((f) => ({
-              key: f.path,
-              label: (
-                <span className="flex items-center gap-1">
-                  {fileName(f.path)}
-                  <span
-                    className="opacity-50 hover:opacity-100 cursor-pointer"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      closeTab(f.path)
-                    }}
-                  >
-                    ×
-                  </span>
-                </span>
-              ),
-              children: null,
-            }))}
-            activeKey={activeFile || undefined}
-            onChange={(key) => {
-              setActiveFile(key)
-              switchToFile(key)
-            }}
-            variant="border"
-            size="sm"
-          />
-        </div>
-      )}
-
-      {/* Editor */}
-      <div className="flex-1" style={{ display: files.length > 0 ? 'block' : 'none' }}>
-        <Editor
-          theme={monacoTheme}
-          onMount={handleMount}
-          defaultLanguage="typescript"
-          defaultValue=""
-          options={{
-            fontSize: 14,
-            minimap: { enabled: false },
-            automaticLayout: true,
-          }}
-        />
-      </div>
-
-      {files.length === 0 && (
-        <div className="flex-1 flex items-center justify-center text-base-content/40">
-          <span>⌘O to open a file</span>
-        </div>
-      )}
-    </div>
+  const fileSystemProvider = new InMemoryFileSystemProvider()
+  await fileSystemProvider.mkdir(workspaceUri)
+  await fileSystemProvider.writeFile(codeUri, textEncoder.encode(sampleCode), options)
+  await fileSystemProvider.writeFile(
+    workspaceFileUri,
+    textEncoder.encode(JSON.stringify({ folders: [{ path: '/workspace' }] })),
+    options,
   )
+  registerFileSystemOverlay(1, fileSystemProvider)
+
+  // Configure monaco-vscode-api
+  const vscodeApiConfig: MonacoVscodeApiConfig = {
+    $type: 'extended',
+    viewsConfig: {
+      $type: 'EditorService',
+      htmlContainer,
+    },
+    logLevel: LogLevel.Warning,
+    advanced: {
+      loadExtensionServices: false,
+    },
+    serviceOverrides: {
+      ...getKeybindingsServiceOverride(),
+      ...getExtensionServiceOverride({
+        enableWorkerExtensionHost: true,
+      }),
+    },
+    userConfiguration: {
+      json: JSON.stringify({
+        'workbench.colorTheme': 'Default Dark Modern',
+        'editor.wordBasedSuggestions': 'off',
+        'editor.minimap.enabled': false,
+        'editor.fontSize': 14,
+        'typescript.tsserver.web.projectWideIntellisense.enabled': true,
+        'typescript.tsserver.web.projectWideIntellisense.suppressSemanticErrors': false,
+      }),
+    },
+    workspaceConfig: {
+      enableWorkspaceTrust: true,
+      workspaceProvider: {
+        trusted: true,
+        async open() {
+          return true
+        },
+        workspace: {
+          workspaceUri: workspaceFileUri,
+        },
+      },
+    },
+    monacoWorkerFactory: configureDefaultWorkerFactory,
+  }
+
+  // Initialize the API wrapper
+  const apiWrapper = new MonacoVscodeApiWrapper(vscodeApiConfig)
+  await apiWrapper.start()
+
+  // Create and start the editor
+  const editorAppConfig: EditorAppConfig = {
+    codeResources: {
+      modified: {
+        text: sampleCode,
+        uri: codeUri.path,
+      },
+    },
+    useDiffEditor: false,
+  }
+
+  const editorApp = new EditorApp(editorAppConfig)
+  await editorApp.start(htmlContainer)
+
+  // Open the document
+  await vscode.workspace.openTextDocument(codeUri)
 }

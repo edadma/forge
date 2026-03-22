@@ -10,20 +10,25 @@
     "dev:electron": "tsc -p tsconfig.main.json && concurrently \"vite\" \"wait-on http://localhost:5173 && NODE_ENV=development electron .\""
   },
   "dependencies": {
-    "@monaco-editor/react": "^4.7.0",
-    "asterui": "^0.12.90",
+    "@codingame/monaco-vscode-api": "~25.1.2",
+    "@codingame/monaco-vscode-extensions-service-override": "~25.1.2",
+    "@codingame/monaco-vscode-files-service-override": "~25.1.2",
+    "@codingame/monaco-vscode-javascript-default-extension": "~25.1.2",
+    "@codingame/monaco-vscode-keybindings-service-override": "~25.1.2",
+    "@codingame/monaco-vscode-theme-defaults-default-extension": "~25.1.2",
+    "@codingame/monaco-vscode-typescript-basics-default-extension": "~25.1.2",
+    "@codingame/monaco-vscode-typescript-language-features-default-extension": "~25.1.2",
+    "monaco-languageclient": "~10.7.0",
     "react": "^19.2.4",
-    "react-dom": "^19.2.4"
+    "react-dom": "^19.2.4",
+    "vscode": "npm:@codingame/monaco-vscode-extension-api@~25.1.2"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "^4.2.1",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^4.7.0",
     "concurrently": "^9.2.1",
-    "daisyui": "^5.5.19",
     "electron": "^41.0.3",
-    "tailwindcss": "^4.2.1",
     "typescript": "^5.9.3",
     "vite": "^6.4.1",
     "wait-on": "^9.0.4"

@@ -1,13 +1,44 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [
+    react(),
+    {
+      name: 'configure-response-headers',
+      apply: 'serve',
+      configureServer: (server) => {
+        server.middlewares.use((_req, res, next) => {
+          res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless')
+          res.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
+          res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+          next()
+        })
+      },
+    },
+  ],
   root: 'src/renderer',
   base: './',
   build: {
     outDir: '../../dist/renderer',
     emptyOutDir: true,
+  },
+  worker: {
+    format: 'es',
+  },
+  optimizeDeps: {
+    exclude: [
+      '@codingame/monaco-vscode-api',
+      '@codingame/monaco-vscode-extensions-service-override',
+      '@codingame/monaco-vscode-files-service-override',
+      '@codingame/monaco-vscode-javascript-default-extension',
+      '@codingame/monaco-vscode-keybindings-service-override',
+      '@codingame/monaco-vscode-theme-defaults-default-extension',
+      '@codingame/monaco-vscode-typescript-basics-default-extension',
+      '@codingame/monaco-vscode-typescript-language-features-default-extension',
+    ],
+    include: [
+      'vscode/localExtensionHost',
+    ],
   },
 })
