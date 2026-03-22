@@ -290,6 +290,111 @@ export default function App() {
       })
     }
 
+    // Go-to-definition: Cmd+click or Cmd+B
+    // We handle navigation ourselves instead of returning locations to Monaco,
+    // because Monaco can't open files that aren't loaded as models
+    editor.addAction({
+      id: 'lsp-goto-definition',
+      label: 'Go to Definition',
+      keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyB],
+      run: async (ed) => {
+        if (!tsClient.isInitialized) return
+        const model = ed.getModel()
+        const position = ed.getPosition()
+        if (!model || !position) return
+
+        try {
+          const result = await tsClient.requestDefinition(
+            model.uri.toString(),
+            position.lineNumber - 1,
+            position.column - 1,
+          )
+          if (!result) return
+          const locations = Array.isArray(result) ? result : [result]
+          if (locations.length === 0) return
+
+          const loc = locations[0]
+          const targetUri = monaco.Uri.parse(loc.uri)
+          const filePath = targetUri.path
+          const targetLine = loc.range.start.line + 1
+          const targetCol = loc.range.start.character + 1
+
+          // Ensure file is open
+          let targetModel = monaco.editor.getModel(targetUri)
+          if (!targetModel) {
+            const content = await forge.readFile(filePath)
+            targetModel = monaco.editor.createModel(content, getMonacoLanguageId(filePath), targetUri)
+            openFile({ path: filePath, content })
+          } else {
+            setActiveFile(filePath)
+          }
+
+          // Switch to the model and jump to location
+          ed.setModel(targetModel)
+          ed.setPosition({ lineNumber: targetLine, column: targetCol })
+          ed.revealLineInCenter(targetLine)
+          ed.focus()
+        } catch {}
+      },
+    })
+
+    // Also register as a definition provider so Cmd+click works
+    for (const lang of languages) {
+      monaco.languages.registerDefinitionProvider(lang, {
+        provideDefinition: async (model, position) => {
+          if (!tsClient.isInitialized) return null
+          try {
+            const result = await tsClient.requestDefinition(
+              model.uri.toString(),
+              position.lineNumber - 1,
+              position.column - 1,
+            )
+            if (!result) return null
+            const locations = Array.isArray(result) ? result : [result]
+
+            // Pre-load any files that aren't open yet
+            for (const loc of locations) {
+              const targetUri = monaco.Uri.parse(loc.uri)
+              if (!monaco.editor.getModel(targetUri)) {
+                const filePath = targetUri.path
+                try {
+                  const content = await forge.readFile(filePath)
+                  monaco.editor.createModel(content, getMonacoLanguageId(filePath), targetUri)
+                  openFile({ path: filePath, content })
+                } catch {}
+              }
+            }
+
+            // After pre-loading, switch to the target file
+            if (locations.length > 0) {
+              const loc = locations[0]
+              const filePath = monaco.Uri.parse(loc.uri).path
+              setActiveFile(filePath)
+              // Defer cursor positioning to after model switch
+              setTimeout(() => {
+                const targetLine = loc.range.start.line + 1
+                const targetCol = loc.range.start.character + 1
+                editor.setPosition({ lineNumber: targetLine, column: targetCol })
+                editor.revealLineInCenter(targetLine)
+              }, 50)
+            }
+
+            return locations.map((loc: any) => ({
+              uri: monaco.Uri.parse(loc.uri),
+              range: {
+                startLineNumber: loc.range.start.line + 1,
+                startColumn: loc.range.start.character + 1,
+                endLineNumber: loc.range.end.line + 1,
+                endColumn: loc.range.end.character + 1,
+              },
+            }))
+          } catch {
+            return null
+          }
+        },
+      })
+    }
+
     // Track content changes and notify TS LSP + ESLint
     editor.onDidChangeModelContent(() => {
       const model = editor.getModel()

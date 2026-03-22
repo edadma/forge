@@ -181,9 +181,13 @@ const template: Electron.MenuItemConstructorOptions[] = [
   },
 ]
 
-// IPC: save file
+// IPC: file operations
 ipcMain.handle('write-file', async (_event, filePath: string, content: string) => {
   await fs.writeFile(filePath, content, 'utf-8')
+})
+
+ipcMain.handle('read-file', async (_event, filePath: string) => {
+  return fs.readFile(filePath, 'utf-8')
 })
 
 app.whenReady().then(() => {

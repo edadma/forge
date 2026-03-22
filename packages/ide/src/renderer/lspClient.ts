@@ -113,6 +113,13 @@ export class LspClient {
     })
   }
 
+  async requestDefinition(uri: string, line: number, character: number) {
+    return this.sendRequest('textDocument/definition', {
+      textDocument: { uri },
+      position: { line, character },
+    })
+  }
+
   async requestHover(uri: string, line: number, character: number) {
     return this.sendRequest('textDocument/hover', {
       textDocument: { uri },

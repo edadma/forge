@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld('forge', {
     return () => ipcRenderer.removeListener('save-file', listener)
   },
   writeFile: (filePath: string, content: string) => ipcRenderer.invoke('write-file', filePath, content),
+  readFile: (filePath: string) => ipcRenderer.invoke('read-file', filePath),
   // LSP channels
   lspTs: createLspChannel('lsp-ts'),
   // ESLint
