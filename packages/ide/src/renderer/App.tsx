@@ -1,6 +1,14 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import Editor, { type OnMount } from '@monaco-editor/react'
 import { useTheme, Tabs } from 'asterui'
+import {
+  initializeLsp,
+  didOpenDocument,
+  didChangeDocument,
+  didCloseDocument,
+  onNotification,
+  pathToUri,
+} from './lspClient'
 
 type MonacoInstance = Parameters<OnMount>[1]
 type EditorInstance = Parameters<OnMount>[0]
@@ -8,11 +16,12 @@ type EditorInstance = Parameters<OnMount>[0]
 interface OpenFile {
   path: string
   content: string
+  version: number
 }
 
 const forge = (window as any).forge
 
-function getLanguage(filePath: string): string {
+function getLanguageId(filePath: string): string {
   const ext = filePath.split('.').pop()
   switch (ext) {
     case 'ts': return 'typescript'
@@ -26,6 +35,17 @@ function getLanguage(filePath: string): string {
   }
 }
 
+// Map LSP severity to Monaco severity
+function lspSeverityToMonaco(severity: number, monaco: MonacoInstance) {
+  switch (severity) {
+    case 1: return monaco.MarkerSeverity.Error
+    case 2: return monaco.MarkerSeverity.Warning
+    case 3: return monaco.MarkerSeverity.Info
+    case 4: return monaco.MarkerSeverity.Hint
+    default: return monaco.MarkerSeverity.Error
+  }
+}
+
 export default function App() {
   const { theme } = useTheme()
   const monacoTheme = theme === 'forge-dark' ? 'vs-dark' : 'vs'
@@ -33,44 +53,50 @@ export default function App() {
   const [activeFile, setActiveFile] = useState<string | null>(null)
   const monacoRef = useRef<MonacoInstance | null>(null)
   const editorRef = useRef<EditorInstance | null>(null)
-  const mountedRef = useRef(false)
+  const lspReady = useRef(false)
+  const fileVersions = useRef<Map<string, number>>(new Map())
 
   const switchToFile = useCallback((filePath: string) => {
     if (!monacoRef.current || !editorRef.current) return
-    const uri = monacoRef.current.Uri.parse(`file://${filePath}`)
+    const uri = monacoRef.current.Uri.parse(pathToUri(filePath))
     const model = monacoRef.current.editor.getModel(uri)
     if (model) {
       editorRef.current.setModel(model)
     }
   }, [])
 
-  const openFile = useCallback((file: OpenFile) => {
+  const openFile = useCallback((file: { path: string; content: string }) => {
     setFiles((prev) => {
       if (prev.some((f) => f.path === file.path)) {
-        // Already open, just switch to it
         setActiveFile(file.path)
         switchToFile(file.path)
         return prev
       }
-      return [...prev, file]
+      return [...prev, { ...file, version: 1 }]
     })
     setActiveFile(file.path)
 
     // Create Monaco model if needed
     if (monacoRef.current) {
-      const uri = monacoRef.current.Uri.parse(`file://${file.path}`)
+      const uri = monacoRef.current.Uri.parse(pathToUri(file.path))
       const existing = monacoRef.current.editor.getModel(uri)
       if (!existing) {
-        monacoRef.current.editor.createModel(file.content, getLanguage(file.path), uri)
+        monacoRef.current.editor.createModel(file.content, getLanguageId(file.path), uri)
       }
       switchToFile(file.path)
+    }
+
+    // Notify language server
+    if (lspReady.current) {
+      fileVersions.current.set(file.path, 1)
+      didOpenDocument(pathToUri(file.path), getLanguageId(file.path), 1, file.content)
     }
   }, [switchToFile])
 
   // Listen for files opened from native menu
   useEffect(() => {
     if (!forge?.onFileOpened) return
-    return forge.onFileOpened((file: OpenFile) => openFile(file))
+    return forge.onFileOpened((file: { path: string; content: string }) => openFile(file))
   }, [openFile])
 
   // Listen for save
@@ -86,27 +112,67 @@ export default function App() {
   const handleMount: OnMount = async (editor, monaco) => {
     monacoRef.current = monaco
     editorRef.current = editor
-    mountedRef.current = true
 
-    // Load React types
-    try {
-      const res = await fetch('https://unpkg.com/@types/react@19.2.14/index.d.ts')
-      if (res.ok) {
-        const content = await res.text()
-        const wrapped = `declare module 'react' {\n${content}\n}`
-        monaco.languages.typescript.typescriptDefaults.addExtraLib(
-          wrapped,
-          'file:///node_modules/@types/react/index.d.ts',
-        )
-      }
-    } catch {}
+    // Listen for diagnostics from the language server
+    onNotification('textDocument/publishDiagnostics', (params: any) => {
+      const uri = monaco.Uri.parse(params.uri)
+      const model = monaco.editor.getModel(uri)
+      if (!model) return
+
+      const markers = (params.diagnostics || []).map((d: any) => ({
+        severity: lspSeverityToMonaco(d.severity, monaco),
+        startLineNumber: d.range.start.line + 1,
+        startColumn: d.range.start.character + 1,
+        endLineNumber: d.range.end.line + 1,
+        endColumn: d.range.end.character + 1,
+        message: d.message,
+        source: d.source || 'ts',
+        code: d.code?.toString(),
+      }))
+
+      monaco.editor.setModelMarkers(model, 'lsp', markers)
+    })
+
+    // Track content changes and notify LSP
+    editor.onDidChangeModelContent(() => {
+      const model = editor.getModel()
+      if (!model || !lspReady.current) return
+      const filePath = model.uri.path
+      const version = (fileVersions.current.get(filePath) || 1) + 1
+      fileVersions.current.set(filePath, version)
+      didChangeDocument(model.uri.toString(), version, model.getValue())
+    })
+
+    // Initialize LSP with the first opened file's directory as root
+    // (will be called once files are opened)
   }
+
+  // Initialize LSP when first file is opened
+  useEffect(() => {
+    if (files.length > 0 && !lspReady.current && monacoRef.current) {
+      const rootPath = files[0].path.substring(0, files[0].path.lastIndexOf('/'))
+      initializeLsp(rootPath).then(() => {
+        lspReady.current = true
+        // Open all currently loaded files with the LS
+        files.forEach((f) => {
+          fileVersions.current.set(f.path, f.version)
+          didOpenDocument(pathToUri(f.path), getLanguageId(f.path), f.version, f.content)
+        })
+      }).catch((err) => {
+        console.error('LSP init failed:', err)
+      })
+    }
+  }, [files])
 
   const closeTab = (filePath: string) => {
     if (monacoRef.current) {
-      const uri = monacoRef.current.Uri.parse(`file://${filePath}`)
+      const uri = monacoRef.current.Uri.parse(pathToUri(filePath))
       const model = monacoRef.current.editor.getModel(uri)
       if (model) model.dispose()
+    }
+
+    if (lspReady.current) {
+      didCloseDocument(pathToUri(filePath))
     }
 
     const remaining = files.filter((f) => f.path !== filePath)

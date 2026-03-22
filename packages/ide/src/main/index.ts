@@ -1,8 +1,15 @@
 import { app, BrowserWindow, Menu, dialog, ipcMain } from 'electron'
 import path from 'path'
 import fs from 'fs/promises'
+import { spawn, type ChildProcess } from 'child_process'
+import {
+  StreamMessageReader,
+  StreamMessageWriter,
+  type Message,
+} from 'vscode-jsonrpc/node'
 
 let win: BrowserWindow | null = null
+let lsProcess: ChildProcess | null = null
 
 function createWindow() {
   win = new BrowserWindow({
@@ -24,6 +31,39 @@ function createWindow() {
   } else {
     win.loadFile(path.join(__dirname, '../renderer/index.html'))
   }
+}
+
+// Language Server
+function startLanguageServer() {
+  const lsPath = path.resolve(
+    __dirname,
+    '../../node_modules/.bin/typescript-language-server',
+  )
+  lsProcess = spawn(lsPath, ['--stdio'])
+
+  const reader = new StreamMessageReader(lsProcess.stdout!)
+  const writer = new StreamMessageWriter(lsProcess.stdin!)
+
+  // Forward LS → renderer
+  reader.listen((msg) => {
+    if (win) {
+      win.webContents.send('lsp-message', msg)
+    }
+  })
+
+  // Forward renderer → LS
+  ipcMain.on('lsp-message', (_event: any, msg: Message) => {
+    writer.write(msg)
+  })
+
+  lsProcess.on('exit', (code) => {
+    console.log(`Language server exited with code ${code}`)
+    lsProcess = null
+  })
+
+  lsProcess.stderr?.on('data', (data) => {
+    console.error(`LS stderr: ${data}`)
+  })
 }
 
 // Menu
@@ -86,9 +126,11 @@ ipcMain.handle('write-file', async (_event, filePath: string, content: string) =
 app.whenReady().then(() => {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
   createWindow()
+  startLanguageServer()
 })
 
 app.on('window-all-closed', () => {
+  lsProcess?.kill()
   if (process.platform !== 'darwin') app.quit()
 })
 
