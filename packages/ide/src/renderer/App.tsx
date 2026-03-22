@@ -257,7 +257,40 @@ export default function App() {
       })
     }
 
-    // Track content changes and notify both LSPs
+    // Register LSP hover provider for TS/JS (replaces Monaco's built-in)
+    for (const lang of languages) {
+      monaco.languages.registerHoverProvider(lang, {
+        provideHover: async (model, position) => {
+          if (!tsClient.isInitialized) return null
+          try {
+            const result = await tsClient.requestHover(
+              model.uri.toString(),
+              position.lineNumber - 1,
+              position.column - 1,
+            )
+            if (!result?.contents) return null
+            const contents = Array.isArray(result.contents)
+              ? result.contents.map((c: any) =>
+                  typeof c === 'string' ? { value: c } : { value: c.value }
+                )
+              : [{ value: typeof result.contents === 'string' ? result.contents : result.contents.value }]
+            return {
+              contents,
+              range: result.range ? {
+                startLineNumber: result.range.start.line + 1,
+                startColumn: result.range.start.character + 1,
+                endLineNumber: result.range.end.line + 1,
+                endColumn: result.range.end.character + 1,
+              } : undefined,
+            }
+          } catch {
+            return null
+          }
+        },
+      })
+    }
+
+    // Track content changes and notify TS LSP + ESLint
     editor.onDidChangeModelContent(() => {
       const model = editor.getModel()
       if (!model) return
