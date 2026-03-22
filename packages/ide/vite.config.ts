@@ -35,15 +35,5 @@ export default defineConfig({
     include: [
       'vscode/localExtensionHost',
     ],
-    exclude: [
-      '@codingame/monaco-vscode-api',
-      '@codingame/monaco-vscode-extensions-service-override',
-      '@codingame/monaco-vscode-files-service-override',
-      '@codingame/monaco-vscode-javascript-default-extension',
-      '@codingame/monaco-vscode-keybindings-service-override',
-      '@codingame/monaco-vscode-theme-defaults-default-extension',
-      '@codingame/monaco-vscode-typescript-basics-default-extension',
-      '@codingame/monaco-vscode-typescript-language-features-default-extension',
-    ],
   },
 })
