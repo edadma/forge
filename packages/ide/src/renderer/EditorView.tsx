@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import Editor, { type OnMount } from '@monaco-editor/react'
-import { useTheme, Tabs } from 'asterui'
+import { useTheme, Tabs, Splitter } from 'asterui'
 import { tsClient, pathToUri } from './lspClient'
+import FileTree from './FileTree'
 
 type MonacoInstance = Parameters<OnMount>[1]
 type EditorInstance = Parameters<OnMount>[0]
@@ -536,59 +537,81 @@ export default function EditorView({ projectPath }: { projectPath: string }) {
 
   const fileName = (p: string) => p.split('/').pop() || p
 
+  const handleTreeFileClick = useCallback(async (filePath: string) => {
+    // Don't reopen if already open
+    if (files.some((f) => f.path === filePath)) {
+      setActiveFile(filePath)
+      switchToFile(filePath)
+      return
+    }
+    const content = await forge.readFile(filePath)
+    openFile({ path: filePath, content })
+  }, [files, openFile, switchToFile])
+
   return (
     <div className="h-screen flex flex-col bg-base-100">
-      {files.length > 0 && (
-        <div className="shrink-0">
-          <Tabs
-            items={files.map((f) => ({
-              key: f.path,
-              label: (
-                <span className="flex items-center gap-1">
-                  {fileName(f.path)}
-                  <span
-                    className="opacity-50 hover:opacity-100 cursor-pointer"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      closeTab(f.path)
+      <div className="flex-1 min-h-0">
+        <Splitter direction="horizontal" className="h-full">
+          <Splitter.Panel defaultSize={20} minSize={10} collapsible>
+            <FileTree projectPath={projectPath} onFileClick={handleTreeFileClick} />
+          </Splitter.Panel>
+          <Splitter.Panel>
+            <div className="flex flex-col h-full">
+              {files.length > 0 && (
+                <div className="shrink-0">
+                  <Tabs
+                    items={files.map((f) => ({
+                      key: f.path,
+                      label: (
+                        <span className="flex items-center gap-1">
+                          {fileName(f.path)}
+                          <span
+                            className="opacity-50 hover:opacity-100 cursor-pointer"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              closeTab(f.path)
+                            }}
+                          >
+                            ×
+                          </span>
+                        </span>
+                      ),
+                      children: null,
+                    }))}
+                    activeKey={activeFile || undefined}
+                    onChange={(key) => {
+                      setActiveFile(key)
+                      switchToFile(key)
                     }}
-                  >
-                    ×
-                  </span>
-                </span>
-              ),
-              children: null,
-            }))}
-            activeKey={activeFile || undefined}
-            onChange={(key) => {
-              setActiveFile(key)
-              switchToFile(key)
-            }}
-            variant="border"
-            size="sm"
-          />
-        </div>
-      )}
+                    variant="border"
+                    size="sm"
+                  />
+                </div>
+              )}
 
-      <div className="flex-1" style={{ display: files.length > 0 ? 'block' : 'none' }}>
-        <Editor
-          theme={monacoTheme}
-          onMount={handleMount}
-          defaultLanguage="typescript"
-          defaultValue=""
-          options={{
-            fontSize: 14,
-            minimap: { enabled: true },
-            automaticLayout: true,
-          }}
-        />
+              <div className="flex-1" style={{ display: files.length > 0 ? 'block' : 'none' }}>
+                <Editor
+                  theme={monacoTheme}
+                  onMount={handleMount}
+                  defaultLanguage="typescript"
+                  defaultValue=""
+                  options={{
+                    fontSize: 14,
+                    minimap: { enabled: true },
+                    automaticLayout: true,
+                  }}
+                />
+              </div>
+
+              {files.length === 0 && (
+                <div className="flex-1 flex items-center justify-center text-base-content/40">
+                  <span>⌘O to open a file or folder</span>
+                </div>
+              )}
+            </div>
+          </Splitter.Panel>
+        </Splitter>
       </div>
-
-      {files.length === 0 && (
-        <div className="flex-1 flex items-center justify-center text-base-content/40">
-          <span>⌘⇧O to open a folder, ⌘O to open a file</span>
-        </div>
-      )}
     </div>
   )
 }

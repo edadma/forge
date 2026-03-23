@@ -38,6 +38,7 @@ contextBridge.exposeInMainWorld('forge', {
   },
   writeFile: (filePath: string, content: string) => ipcRenderer.invoke('write-file', filePath, content),
   readFile: (filePath: string) => ipcRenderer.invoke('read-file', filePath),
+  readDirectory: (dirPath: string) => ipcRenderer.invoke('read-directory', dirPath),
   // LSP channels
   lspTs: createLspChannel('lsp-ts'),
   // ESLint
@@ -52,4 +53,6 @@ contextBridge.exposeInMainWorld('forge', {
   startLanguageServers: () => ipcRenderer.invoke('start-language-servers'),
   // Open folder dialog (from launcher)
   openFolderDialog: () => ipcRenderer.invoke('open-folder-dialog'),
+  // Open project (tells main to create a new project window)
+  openProject: (projectPath: string) => ipcRenderer.invoke('open-project', projectPath),
 })

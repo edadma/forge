@@ -10,11 +10,7 @@ interface Project {
   lastOpened: string
 }
 
-interface ProjectLauncherProps {
-  onOpenProject: (projectPath: string) => void
-}
-
-export default function ProjectLauncher({ onOpenProject }: ProjectLauncherProps) {
+export default function ProjectLauncher() {
   const [projects, setProjects] = useState<Project[]>([])
   const [search, setSearch] = useState('')
 
@@ -24,7 +20,6 @@ export default function ProjectLauncher({ onOpenProject }: ProjectLauncherProps)
 
   async function loadProjects() {
     const rows = await forge.dbGetProjects()
-    // Sort by lastOpened descending
     rows.sort((a: Project, b: Project) => b.lastOpened.localeCompare(a.lastOpened))
     setProjects(rows)
   }
@@ -32,14 +27,8 @@ export default function ProjectLauncher({ onOpenProject }: ProjectLauncherProps)
   async function handleOpen() {
     const folderPath = await forge.openFolderDialog()
     if (folderPath) {
-      openProject(folderPath)
+      forge.openProject(folderPath)
     }
-  }
-
-  async function openProject(projectPath: string) {
-    const name = projectPath.split('/').pop() || projectPath
-    await forge.dbAddProject(name, projectPath)
-    onOpenProject(projectPath)
   }
 
   function getInitials(name: string): string {
@@ -81,7 +70,7 @@ export default function ProjectLauncher({ onOpenProject }: ProjectLauncherProps)
             className="flex-1"
           />
           <Button color="primary" onClick={handleOpen}>
-            Open Folder
+            Open
           </Button>
         </Flex>
       </div>
@@ -91,7 +80,7 @@ export default function ProjectLauncher({ onOpenProject }: ProjectLauncherProps)
         {filtered.length === 0 && (
           <div className="text-center text-base-content/40 mt-12">
             {projects.length === 0
-              ? 'No recent projects. Click "Open Folder" to get started.'
+              ? 'No recent projects. Click "Open" to get started.'
               : 'No matching projects.'}
           </div>
         )}
@@ -99,7 +88,7 @@ export default function ProjectLauncher({ onOpenProject }: ProjectLauncherProps)
           <div
             key={project.path}
             className="flex items-center gap-3 p-3 rounded-lg cursor-pointer hover:bg-base-200 transition-colors"
-            onClick={() => openProject(project.path)}
+            onClick={() => forge.openProject(project.path)}
           >
             <div className={`w-9 h-9 rounded-lg ${getColor(project.name)} flex items-center justify-center text-white text-xs font-bold shrink-0`}>
               {getInitials(project.name)}

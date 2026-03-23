@@ -1,7 +1,7 @@
 import { app, BrowserWindow, Menu, dialog, ipcMain } from 'electron'
 import path from 'path'
 import fs from 'fs/promises'
-import { spawn, type ChildProcess } from 'child_process'
+import { spawn, execFile, type ChildProcess } from 'child_process'
 import {
   StreamMessageReader,
   StreamMessageWriter,
@@ -10,14 +10,16 @@ import {
 import { db, projects, projectState, initDb } from './db'
 import { eq } from '@petradb/quarry'
 
-let win: BrowserWindow | null = null
-const servers: { name: string; process: ChildProcess }[] = []
+// --- Launcher window (singleton, show/hide) ---
 
-function createWindow() {
-  win = new BrowserWindow({
-    width: 1200,
-    height: 800,
+let launcherWin: BrowserWindow | null = null
+
+function createLauncherWindow() {
+  launcherWin = new BrowserWindow({
+    width: 600,
+    height: 500,
     show: false,
+    title: 'Forge',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -25,168 +27,212 @@ function createWindow() {
     },
   })
 
-  win.once('ready-to-show', () => win!.show())
+  launcherWin.once('ready-to-show', () => launcherWin!.show())
 
   if (process.env.NODE_ENV === 'development') {
-    win.loadURL('http://localhost:5173')
-    win.webContents.openDevTools()
+    launcherWin.loadURL('http://localhost:5173?window=launcher')
+    launcherWin.webContents.openDevTools()
   } else {
-    win.loadFile(path.join(__dirname, '../renderer/index.html'))
+    launcherWin.loadFile(path.join(__dirname, '../renderer/index.html'), {
+      query: { window: 'launcher' },
+    })
+  }
+
+  // Prevent the launcher from being destroyed when project windows are open — just hide it
+  launcherWin.on('close', (e) => {
+    if (projectWindows.size > 0) {
+      e.preventDefault()
+      launcherWin!.hide()
+    }
+  })
+}
+
+function showLauncher() {
+  if (launcherWin) {
+    launcherWin.show()
+    launcherWin.focus()
   }
 }
 
-// Generic language server launcher
-function startServer(name: string, binPath: string, args: string[], ipcChannel: string) {
-  const serverProcess = spawn(binPath, args)
-  servers.push({ name, process: serverProcess })
+// --- Project windows ---
 
-  const reader = new StreamMessageReader(serverProcess.stdout!)
-  const writer = new StreamMessageWriter(serverProcess.stdin!)
+const projectWindows = new Map<number, ProjectWindow>() // keyed by webContents.id
 
-  // Forward LS → renderer
-  reader.listen((msg) => {
-    if (win) {
-      win.webContents.send(ipcChannel, msg)
+class ProjectWindow {
+  win: BrowserWindow
+  projectPath: string
+  servers: { name: string; process: ChildProcess }[] = []
+  lspWriters = new Map<string, StreamMessageWriter>()
+
+  constructor(projectPath: string) {
+    this.projectPath = projectPath
+
+    this.win = new BrowserWindow({
+      width: 1200,
+      height: 800,
+      show: false,
+      title: path.basename(projectPath),
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    })
+
+    this.win.once('ready-to-show', () => this.win.show())
+
+    const encodedPath = encodeURIComponent(projectPath)
+    if (process.env.NODE_ENV === 'development') {
+      this.win.loadURL(`http://localhost:5173?window=editor&project=${encodedPath}`)
+    } else {
+      this.win.loadFile(path.join(__dirname, '../renderer/index.html'), {
+        query: { window: 'editor', project: projectPath },
+      })
     }
-  })
 
-  // Forward renderer → LS
-  ipcMain.on(ipcChannel, (_event: any, msg: Message) => {
-    writer.write(msg)
-  })
+    projectWindows.set(this.win.webContents.id, this)
 
-  serverProcess.on('exit', (code) => {
-    console.log(`${name} exited with code ${code}`)
-  })
+    this.win.on('closed', () => {
+      this.killServers()
+      projectWindows.delete(this.win.webContents.id)
 
-  serverProcess.stderr?.on('data', (data) => {
-    console.error(`${name} stderr: ${data}`)
-  })
+      if (projectWindows.size === 0) {
+        showLauncher()
+      }
+    })
+  }
+
+  startLanguageServers() {
+    if (this.servers.length > 0) return
+
+    this.startServer(
+      'typescript-language-server',
+      path.resolve(__dirname, '../../node_modules/.bin/typescript-language-server'),
+      ['--stdio'],
+      'lsp-ts',
+    )
+  }
+
+  private startServer(name: string, binPath: string, args: string[], ipcChannel: string) {
+    const serverProcess = spawn(binPath, args)
+    this.servers.push({ name, process: serverProcess })
+
+    const reader = new StreamMessageReader(serverProcess.stdout!)
+    const writer = new StreamMessageWriter(serverProcess.stdin!)
+
+    reader.listen((msg) => {
+      if (!this.win.isDestroyed()) {
+        this.win.webContents.send(ipcChannel, msg)
+      }
+    })
+
+    this.lspWriters.set(ipcChannel, writer)
+
+    serverProcess.on('exit', (code) => {
+      console.log(`${name} (${path.basename(this.projectPath)}) exited with code ${code}`)
+    })
+
+    serverProcess.stderr?.on('data', (data) => {
+      console.error(`${name} stderr: ${data}`)
+    })
+  }
+
+  killServers() {
+    this.servers.forEach((s) => s.process.kill())
+    this.servers = []
+    this.lspWriters.clear()
+  }
 }
 
-function startLanguageServers() {
-  // TypeScript language server
-  startServer(
-    'typescript-language-server',
-    path.resolve(__dirname, '../../node_modules/.bin/typescript-language-server'),
-    ['--stdio'],
-    'lsp-ts',
-  )
+function openProject(projectPath: string) {
+  // Focus existing window if already open
+  for (const pw of projectWindows.values()) {
+    if (pw.projectPath === projectPath) {
+      pw.win.focus()
+      return
+    }
+  }
 
-  // ESLint — run directly via project's eslint
-  startEslintRunner()
+  if (launcherWin) launcherWin.hide()
+
+  // Record in database
+  const name = path.basename(projectPath)
+  const now = new Date().toISOString()
+  db.insert(projects).values({ name, path: projectPath, lastOpened: now }).execute().catch(() => {
+    db.update(projects).set({ lastOpened: now }).where(eq(projects.path, projectPath)).execute()
+  })
+
+  new ProjectWindow(projectPath)
 }
 
-// ESLint runner — executes project's eslint on files and sends diagnostics
-function startEslintRunner() {
-  // Listen for lint requests from renderer
-  ipcMain.on('eslint-lint', async (_event, data: { uri: string; filePath: string; rootPath: string }) => {
-    if (!win) return
-    try {
-      const { execFile } = await import('child_process')
-      const eslintBin = path.join(data.rootPath, 'node_modules/.bin/eslint')
+function getProjectWindow(event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent): ProjectWindow | null {
+  return projectWindows.get(event.sender.id) || null
+}
 
-      execFile(eslintBin, [data.filePath, '--format', 'json'], {
-        cwd: data.rootPath,
-      }, (error, stdout) => {
-        try {
-          // eslint exits with code 1 when there are lint errors, which is normal
-          const results = JSON.parse(stdout)
-          if (results.length > 0) {
-            const diagnostics = results[0].messages.map((msg: any) => ({
+// --- IPC: LSP message forwarding (routed by sender) ---
+
+ipcMain.on('lsp-ts', (event, msg: Message) => {
+  const pw = getProjectWindow(event)
+  if (pw) {
+    const writer = pw.lspWriters.get('lsp-ts')
+    if (writer) writer.write(msg)
+  }
+})
+
+// --- IPC: ESLint (routed by sender) ---
+
+ipcMain.on('eslint-lint', (event, data: { uri: string; filePath: string; rootPath: string }) => {
+  const pw = getProjectWindow(event)
+  if (!pw) return
+  try {
+    const eslintBin = path.join(data.rootPath, 'node_modules/.bin/eslint')
+    execFile(eslintBin, [data.filePath, '--format', 'json'], {
+      cwd: data.rootPath,
+    }, (_error, stdout) => {
+      try {
+        const results = JSON.parse(stdout)
+        const diagnostics = results.length > 0
+          ? results[0].messages.map((msg: any) => ({
               range: {
                 start: { line: (msg.line || 1) - 1, character: (msg.column || 1) - 1 },
                 end: { line: (msg.endLine || msg.line || 1) - 1, character: (msg.endColumn || msg.column || 1) - 1 },
               },
-              severity: msg.severity === 2 ? 1 : 2, // 2=error→1, 1=warning→2
+              severity: msg.severity === 2 ? 1 : 2,
               message: msg.message,
               source: 'eslint',
               code: msg.ruleId,
             }))
-            win!.webContents.send('eslint-diagnostics', { uri: data.uri, diagnostics })
-          } else {
-            win!.webContents.send('eslint-diagnostics', { uri: data.uri, diagnostics: [] })
-          }
-        } catch {
-          // JSON parse failed or no results
-          win!.webContents.send('eslint-diagnostics', { uri: data.uri, diagnostics: [] })
+          : []
+        if (!pw.win.isDestroyed()) {
+          pw.win.webContents.send('eslint-diagnostics', { uri: data.uri, diagnostics })
         }
-      })
-    } catch (err) {
-      console.error('ESLint runner error:', err)
-    }
-  })
-}
+      } catch {
+        if (!pw.win.isDestroyed()) {
+          pw.win.webContents.send('eslint-diagnostics', { uri: data.uri, diagnostics: [] })
+        }
+      }
+    })
+  } catch (err) {
+    console.error('ESLint runner error:', err)
+  }
+})
 
-// Menu
-const template: Electron.MenuItemConstructorOptions[] = [
-  {
-    label: app.name,
-    submenu: [{ role: 'quit' }],
-  },
-  {
-    label: 'File',
-    submenu: [
-      {
-        label: 'Open Folder...',
-        accelerator: 'CmdOrCtrl+Shift+O',
-        click: async () => {
-          if (!win) return
-          const result = await dialog.showOpenDialog(win, {
-            properties: ['openDirectory'],
-          })
-          if (!result.canceled && result.filePaths.length > 0) {
-            win.webContents.send('folder-opened', result.filePaths[0])
-          }
-        },
-      },
-      {
-        label: 'Open File...',
-        accelerator: 'CmdOrCtrl+O',
-        click: async () => {
-          if (!win) return
-          const result = await dialog.showOpenDialog(win, {
-            properties: ['openFile', 'multiSelections'],
-            filters: [
-              { name: 'TypeScript', extensions: ['ts', 'tsx', 'js', 'jsx', 'json'] },
-              { name: 'All Files', extensions: ['*'] },
-            ],
-          })
-          if (!result.canceled) {
-            for (const filePath of result.filePaths) {
-              const content = await fs.readFile(filePath, 'utf-8')
-              win!.webContents.send('file-opened', { path: filePath, content })
-            }
-          }
-        },
-      },
-      {
-        label: 'Save',
-        accelerator: 'CmdOrCtrl+S',
-        click: () => {
-          if (win) win.webContents.send('save-file')
-        },
-      },
-    ],
-  },
-  {
-    label: 'Edit',
-    submenu: [
-      { role: 'undo' },
-      { role: 'redo' },
-      { type: 'separator' },
-      { role: 'cut' },
-      { role: 'copy' },
-      { role: 'paste' },
-      { role: 'selectAll' },
-    ],
-  },
-]
+// --- IPC: start language servers (routed by sender) ---
 
-// IPC: open folder dialog (from launcher)
+ipcMain.handle('start-language-servers', (event) => {
+  const pw = getProjectWindow(event)
+  if (pw) pw.startLanguageServers()
+})
+
+// --- IPC: open project (from launcher) ---
+
+ipcMain.handle('open-project', async (_event, projectPath: string) => {
+  openProject(projectPath)
+})
+
 ipcMain.handle('open-folder-dialog', async () => {
-  if (!win) return null
-  const result = await dialog.showOpenDialog(win, {
+  const parent = launcherWin || undefined
+  const result = await dialog.showOpenDialog(parent!, {
     properties: ['openDirectory'],
   })
   if (!result.canceled && result.filePaths.length > 0) {
@@ -195,14 +241,8 @@ ipcMain.handle('open-folder-dialog', async () => {
   return null
 })
 
-// IPC: start language servers (called when a project is opened)
-ipcMain.handle('start-language-servers', () => {
-  if (servers.length === 0) {
-    startLanguageServers()
-  }
-})
+// --- IPC: database operations ---
 
-// IPC: database operations
 ipcMain.handle('db-init', () => initDb())
 
 ipcMain.handle('db-get-projects', async () => {
@@ -214,7 +254,6 @@ ipcMain.handle('db-add-project', async (_event, name: string, projectPath: strin
   try {
     await db.insert(projects).values({ name, path: projectPath, lastOpened: now }).execute()
   } catch {
-    // Already exists — update lastOpened
     await db.update(projects).set({ lastOpened: now }).where(eq(projects.path, projectPath)).execute()
   }
 })
@@ -248,7 +287,8 @@ ipcMain.handle('db-save-project-state', async (_event, state: {
   }
 })
 
-// IPC: file operations
+// --- IPC: file operations ---
+
 ipcMain.handle('write-file', async (_event, filePath: string, content: string) => {
   await fs.writeFile(filePath, content, 'utf-8')
 })
@@ -257,17 +297,102 @@ ipcMain.handle('read-file', async (_event, filePath: string) => {
   return fs.readFile(filePath, 'utf-8')
 })
 
+ipcMain.handle('read-directory', async (_event, dirPath: string) => {
+  const entries = await fs.readdir(dirPath, { withFileTypes: true })
+  return entries
+    .filter((e) => !e.name.startsWith('.'))
+    .map((e) => ({
+      name: e.name,
+      path: path.join(dirPath, e.name),
+      isDirectory: e.isDirectory(),
+    }))
+    .sort((a, b) => {
+      if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1
+      return a.name.localeCompare(b.name)
+    })
+})
+
+// --- Menu ---
+
+const template: Electron.MenuItemConstructorOptions[] = [
+  {
+    label: app.name,
+    submenu: [{ role: 'quit' }],
+  },
+  {
+    label: 'File',
+    submenu: [
+      {
+        label: 'Open...',
+        accelerator: 'CmdOrCtrl+O',
+        click: async () => {
+          const parent = BrowserWindow.getFocusedWindow() || undefined
+          const result = await dialog.showOpenDialog(parent!, {
+            properties: ['openFile', 'openDirectory', 'multiSelections'],
+            filters: [
+              { name: 'Source Files', extensions: ['ts', 'tsx', 'js', 'jsx', 'json', 'css', 'html'] },
+              { name: 'All Files', extensions: ['*'] },
+            ],
+          })
+          if (!result.canceled) {
+            for (const filePath of result.filePaths) {
+              const stat = await fs.stat(filePath)
+              if (stat.isDirectory()) {
+                openProject(filePath)
+              } else {
+                // Open file in focused project window
+                const focused = BrowserWindow.getFocusedWindow()
+                if (focused) {
+                  const content = await fs.readFile(filePath, 'utf-8')
+                  focused.webContents.send('file-opened', { path: filePath, content })
+                }
+              }
+            }
+          }
+        },
+      },
+      {
+        label: 'Save',
+        accelerator: 'CmdOrCtrl+S',
+        click: () => {
+          const focused = BrowserWindow.getFocusedWindow()
+          if (focused) focused.webContents.send('save-file')
+        },
+      },
+    ],
+  },
+  {
+    label: 'Edit',
+    submenu: [
+      { role: 'undo' },
+      { role: 'redo' },
+      { type: 'separator' },
+      { role: 'cut' },
+      { role: 'copy' },
+      { role: 'paste' },
+      { role: 'selectAll' },
+    ],
+  },
+]
+
+// --- App lifecycle ---
+
 app.whenReady().then(async () => {
   await initDb()
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
-  createWindow()
+  createLauncherWindow()
 })
 
 app.on('window-all-closed', () => {
-  servers.forEach((s) => s.process.kill())
   if (process.platform !== 'darwin') app.quit()
 })
 
 app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow()
+  if (projectWindows.size === 0) {
+    if (launcherWin) {
+      showLauncher()
+    } else {
+      createLauncherWindow()
+    }
+  }
 })

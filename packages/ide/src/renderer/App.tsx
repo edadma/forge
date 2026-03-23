@@ -1,13 +1,14 @@
-import { useState } from 'react'
 import ProjectLauncher from './ProjectLauncher'
 import EditorView from './EditorView'
 
-export default function App() {
-  const [projectPath, setProjectPath] = useState<string | null>(null)
+const params = new URLSearchParams(window.location.search)
+const windowType = params.get('window') || 'launcher'
+const projectPath = params.get('project') ? decodeURIComponent(params.get('project')!) : null
 
-  if (projectPath) {
+export default function App() {
+  if (windowType === 'editor' && projectPath) {
     return <EditorView projectPath={projectPath} />
   }
 
-  return <ProjectLauncher onOpenProject={setProjectPath} />
+  return <ProjectLauncher />
 }
